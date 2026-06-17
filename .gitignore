@@ -1,3 +1,12 @@
+# Real deploy values (project, billing, registry id). Template is committed.
+deploy/vars.sh
+
+# Per-instance clasp link (binds a folder to one sheet's script). Source is shared.
+apps_script/**/.clasp.json
+
+# Per-instance Apps Script config (service URL, SA email). Pushed by clasp, not committed.
+apps_script/**/Config.gs
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

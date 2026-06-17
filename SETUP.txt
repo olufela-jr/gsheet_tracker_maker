@@ -1,0 +1,206 @@
+============================================================
+GSHEET TRACKER MAKER - SETUP GUIDE
+============================================================
+
+What this is
+------------
+A system for creating performance-tracker Google Sheets at scale.
+
+  - Cloud Run service (Python)  = the brain. ALL generation logic lives here.
+                                  Advance it by redeploying; existing sheets
+                                  pick up changes on their next call, untouched.
+  - Master control sheet        = where users click "New tracker".
+  - Template sheet              = what each tracker is copied from. Holds a tiny
+                                  generic shim that just calls the service.
+  - Child trackers              = copies of the template, owned by whoever made
+                                  them. Logged to BigQuery.
+
+The three sheets carry only thin Apps Script; nothing that needs editing as the
+product evolves. Repo layout:
+
+  service/        the Cloud Run service
+  apps_script/
+    master/       the master control sheet's bound script
+    template/     the child shim + sheet formatting
+  deploy/         parameterized deploy scripts (bootstrap, deploy, test, vars)
+
+
+============================================================
+PREREQUISITES
+============================================================
+  - gcloud CLI, logged in to the right account:  gcloud config set account YOU
+  - node + npm
+  - clasp:        npm install -g @google/clasp
+  - clasp login   (opens a browser)
+  - Apps Script API ON: https://script.google.com/home/usersettings
+
+
+============================================================
+ONE-TIME SETUP (per instance)
+============================================================
+
+STEP 1 - Configure deploy variables
+-----------------------------------
+  cd deploy
+  cp vars.example.sh vars.sh
+  # edit vars.sh: PROJECT_ID, BILLING_ACCOUNT, REGION, BQ_*, etc.
+  # leave MASTER_SHEET_ID / TEMPLATE_SHEET_ID blank for now.
+
+STEP 2 - Bootstrap the cloud project
+------------------------------------
+  ./bootstrap.sh
+  # Creates (idempotent): the project, billing link, APIs, the runtime service
+  # account, the BigQuery audit dataset+table, and the Artifact Registry repo.
+  # Prints the service account email - you will share sheets with it.
+
+STEP 3 - Create the two control sheets
+--------------------------------------
+  In your browser, create two blank Google Sheets:
+    - one becomes the MASTER (control panel)
+    - one becomes the TEMPLATE
+  Copy each id from its URL (/spreadsheets/d/<ID>/edit) into deploy/vars.sh as
+  MASTER_SHEET_ID and TEMPLATE_SHEET_ID.
+
+STEP 4 - Deploy the service
+---------------------------
+  ./deploy.sh
+  # Builds and deploys to Cloud Run (private, runs as the service account).
+  # Note the printed Service URL.
+
+STEP 5 - Wire up the Apps Script with clasp
+-------------------------------------------
+  Bind each folder to its sheet and push the code. Run from the repo.
+
+    # MASTER
+    cd apps_script/master
+    clasp create-script --parentId <MASTER_SHEET_ID> --rootDir .
+    # then restore appsscript.json (see GOTCHAS) and:
+    clasp push --force
+
+    # TEMPLATE
+    cd ../template
+    clasp create-script --parentId <TEMPLATE_SHEET_ID> --rootDir .
+    # then restore appsscript.json (see GOTCHAS) and:
+    clasp push --force
+
+STEP 6 - Create Config.gs in each folder
+----------------------------------------
+  Per-instance config lives in a Config.gs file, NOT in Script Properties,
+  because Script Properties do NOT copy when a sheet is copied, but script code
+  does. clasp pushes Config.gs, and it is copied into every child. Config.gs is
+  gitignored (per-instance).
+
+    apps_script/template/Config.gs:
+      var SERVICE_URL = '<the Service URL from step 4>';
+
+    apps_script/master/Config.gs:
+      var SERVICE_URL = '<the Service URL from step 4>';
+      var SERVICE_ACCOUNT_EMAIL = '<the SA email from step 2>';
+      var TEMPLATE_SHEET_ID = '<template id>';  // fallback; master also reads
+                                                // it from the service get_config
+
+  Then push:  cd apps_script/master && clasp push --force
+              cd ../template && clasp push --force
+
+STEP 7 - Apply the sheet formatting
+-----------------------------------
+  Formatting lives in the repo so every instance looks the same.
+    TEMPLATE: Apps Script editor > Run > setupTemplate
+    MASTER:   reload the sheet > menu "Tracker Admin" > Apply formatting
+
+STEP 8 - Authenticate sheet -> service (the 401 unlock)
+-------------------------------------------------------
+  The service is private, so each caller needs a valid identity token AND the
+  run.invoker role. Two things:
+
+  8a. Grant run.invoker to each user who will use it:
+      gcloud run services add-iam-policy-binding <SERVICE_NAME> \
+        --region <REGION> \
+        --member "user:someone@example.com" \
+        --role roles/run.invoker
+
+  8b. Cloud Run only accepts tokens whose audience is its own URL. Apps Script's
+      ScriptApp.getIdentityToken() stamps a different audience, so add that
+      audience to the accepted list. Find it by running this once in the script
+      editor:
+
+        function showAudience() {
+          var t = ScriptApp.getIdentityToken();
+          var aud = JSON.parse(Utilities.newBlob(
+            Utilities.base64DecodeWebSafe(t.split('.')[1])).getDataAsString()).aud;
+          Logger.log(aud);
+          SpreadsheetApp.getActiveSpreadsheet().toast(aud, 'Audience', 30);
+        }
+
+      Then:
+        gcloud run services update <SERVICE_NAME> --region <REGION> \
+          --add-custom-audiences=<that-audience-value>
+
+      CAVEAT: each Apps Script project can have its own audience, and a copied
+      child may differ from the template. After the first child is made, run
+      showAudience in it and confirm it matches. If children differ, link the
+      scripts to one shared Google Cloud project so the audience is consistent.
+
+
+============================================================
+DAILY USE
+============================================================
+  1. Open the MASTER sheet > "Tracker Admin" > New tracker.
+     Enter client, sub-brand, title. A new tracker (a copy of the template) is
+     created, owned by you, and logged to BigQuery.
+  2. Open the new tracker. Fill the "setup" tab (field name + metric/dimension)
+     and paste your data into "data_source".
+  3. Tracker > Refresh. The service builds the "mapping" and themed "frontend"
+     tabs. "More actions" exposes the individual steps.
+
+
+============================================================
+MAKING CHANGES
+============================================================
+  - Generation logic / dashboard look (mapping, frontend, named ranges):
+      edit service/, then  cd deploy && ./deploy.sh
+      Every existing tracker gets it on the next Refresh. No sheet edits.
+  - New menu action: add it to MENU_ACTIONS in service/main.py and redeploy.
+      It appears under a child's "More actions" with no child edit.
+  - Input-tab formatting / control-panel look:
+      edit apps_script/template/Setup.gs or apps_script/master/Setup.gs,
+      clasp push --force, then re-run setupTemplate / setupMaster.
+  - Shim behaviour (rare): edit apps_script/template/Code.gs, clasp push.
+      Note: existing children keep their copied shim; only new children get it.
+
+
+============================================================
+GOTCHAS
+============================================================
+  - clasp create-script: use --parentId ONLY. Adding "--type sheets" creates a
+    brand new spreadsheet instead of binding to your existing one.
+  - clasp create-script overwrites the local appsscript.json with a bare default
+    (drops oauthScopes). Restore the committed appsscript.json before
+    clasp push --force, or the script loses its permissions.
+  - .clasp.json is per-instance and gitignored. The committed source is shared;
+    each instance generates its own .clasp.json via clasp create-script.
+  - Tab names are lowercase (setup, data_source, mapping, frontend); matching is
+    case-insensitive, so "Setup" also works.
+  - A service-account-created file is owned by the service account. That is why
+    the MASTER (running as the user) creates children, not the service.
+
+
+============================================================
+THIS INSTANCE (current values)
+============================================================
+  Project:        palm-view-sparkling-water-co   (trial; migrate to a dedicated
+                  project later - see deploy/vars.sh commented PROJECT_ID)
+  Billing:        019987-67C763-7EA9A9
+  Region:         asia-south1
+  Service:        tracker-service
+  Service URL:    https://tracker-service-948395720075.asia-south1.run.app
+  Service acct:   tracker-runner@palm-view-sparkling-water-co.iam.gserviceaccount.com
+  BigQuery:       palm-view-sparkling-water-co.tracker_registry.trackers
+  Master sheet:   1mo2VG-WF7vm9NTj05kPxM-aQPyY--nlJVSpxPq2hESo
+  Template sheet: 1YNnfKqHk3cJzTLoRTHypDg430AtoqUiUXVa9LtU8Sk4
+
+  Status: service deployed; both scripts pushed; run.invoker granted to
+  misterfela@gmail.com; template audience added as a custom audience
+  (739745944741-...apps.googleusercontent.com). Remaining: set Script
+  Properties, apply formatting, and verify a child's audience matches the
+  template's (step 8b caveat) - children may need a shared Cloud project.
