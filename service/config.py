@@ -38,6 +38,15 @@ BIGQUERY_TABLE = os.environ.get("BIGQUERY_TABLE", "trackers")
 MASTER_SHEET_ID = os.environ.get("MASTER_SHEET_ID", "")
 TEMPLATE_SHEET_ID = os.environ.get("TEMPLATE_SHEET_ID", "")
 
+# Access control. The relay forwards the caller's identity token; the service
+# verifies it and gates on these. ALLOWED_EMAILS / ALLOWED_DOMAIN decide who may
+# use the system at all; ADMIN_EMAILS may act on any tracker (others only on
+# trackers they created). RATE_LIMIT_PER_MIN is a per-caller cap (0 disables).
+ALLOWED_EMAILS = os.environ.get("ALLOWED_EMAILS", "")
+ADMIN_EMAILS = os.environ.get("ADMIN_EMAILS", "")
+ALLOWED_DOMAIN = os.environ.get("ALLOWED_DOMAIN", "")
+RATE_LIMIT_PER_MIN = int(os.environ.get("RATE_LIMIT_PER_MIN", "30"))
+
 
 @dataclass
 class Config:
@@ -54,6 +63,10 @@ class Config:
     bigquery_table: str = BIGQUERY_TABLE
     master_sheet_id: str = MASTER_SHEET_ID
     template_sheet_id: str = TEMPLATE_SHEET_ID
+    allowed_emails: str = ALLOWED_EMAILS
+    admin_emails: str = ADMIN_EMAILS
+    allowed_domain: str = ALLOWED_DOMAIN
+    rate_limit_per_min: int = RATE_LIMIT_PER_MIN
 
 
 DEFAULT_CONFIG = Config()

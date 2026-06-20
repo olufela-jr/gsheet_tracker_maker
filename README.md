@@ -14,20 +14,27 @@ Master control sheet  ── New tracker ─┐
 Child tracker sheet  ── Refresh ──────┐   owned by the user, carries a
   (generic shim)                      │   tiny dispatcher shim
                                       v
-POST Cloud Run /  (identity token)  ──> Python service  ──> Sheets + BigQuery
-                                        all logic lives here
+Relay web app  ── forwards (+ its own identity) ──> Cloud Run (PRIVATE)
+  (dumb pass-through)                                Python service
+                                                     all logic + auth here
+                                                     ──> Sheets + BigQuery
 ```
 
-- **Cloud Run is the only place logic lives.** Both the master and the child
-  send a spreadsheet id and an action; the service does the work. To advance
-  behaviour you redeploy the service, and every existing sheet picks it up on
-  its next call, untouched.
-- The service runs as a service account, which is shared as an Editor on each
-  child sheet so it can edit it. Calls are authenticated with an identity
-  token; the service is deployed without public access.
+- **Cloud Run is the only place logic and access control live.** Callers send a
+  caller identity token, a spreadsheet id, and an action; the service verifies
+  the caller, authorizes, and does the work. To advance behaviour you redeploy
+  the service, and every existing sheet picks it up untouched.
+- The service stays **private**. Children and the master call the **relay** (a
+  standalone Apps Script web app); the relay holds one stable identity and is
+  the only thing Cloud Run accepts, so unlimited children work without per-child
+  setup. The service verifies the forwarded caller token, checks an allowlist,
+  rate-limits, and enforces per-tracker ownership from the BigQuery registry.
+- The service runs as a service account that is an Editor on each child sheet.
 
-### The three pieces
+### The pieces
 
+- **Relay** ([apps_script/relay/](apps_script/relay/)) is a dumb forwarder: it
+  attaches its identity and passes requests to the private service. No logic.
 - **Master control sheet** ([apps_script/master/](apps_script/master/)) is where
   users mint trackers. "New tracker" copies the template (as the clicking user,
   so the user owns the child), shares the service account, and calls `scaffold`
@@ -232,21 +239,24 @@ python main.py
 
 ```
 service/             Cloud Run Python service
-  main.py            Flask app, routes POST / to an action
+  main.py            Flask app: routes POST / to an action; auth gating
+  auth.py            verify caller token, allowlist, admin, rate limit
   sheets_client.py   Sheets API wrapper over ADC
-  bq_client.py       BigQuery wrapper for the audit log
+  bq_client.py       BigQuery wrapper (audit log + per-tracker created_by)
   tracker.py         domain logic plus the pure helpers
   theme.py           Frontend palette, layout, and formatting requests
-  config.py          tab names, sentinel, sanitise + helpers, sheet ids
+  config.py          tab names, sentinel, sanitise + helpers, ids, allowlist
   requirements.txt
   Dockerfile
   .dockerignore
   tests/             pytest for the pure helpers
 apps_script/
-  master/            control sheet: creates trackers from the template
-    Menu.gs  Service.gs  appsscript.json
-  template/          child shim children are copied from
+  relay/             standalone web app: dumb forwarder to the private service
     Code.gs  appsscript.json
+  master/            control sheet: creates trackers from the template
+    Menu.gs  Service.gs  Setup.gs  appsscript.json
+  template/          child shim children are copied from
+    Code.gs  Setup.gs  appsscript.json
 deploy/              parameterized deploy (bootstrap, deploy, test, vars)
   README.md          deploy instructions
 ```

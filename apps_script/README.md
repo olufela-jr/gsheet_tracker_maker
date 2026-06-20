@@ -1,16 +1,21 @@
-# Apps Script (master + template)
+# Apps Script (relay + master + template)
 
-Two bound scripts, managed with [clasp](https://github.com/google/clasp) so the
-code and the sheet formatting live in this repo and can be pushed to any
-instance.
+Three scripts, managed with [clasp](https://github.com/google/clasp) so the code
+and the sheet formatting live in this repo and can be pushed to any instance.
 
+- `relay/` - a standalone web app. A dumb pass-through: it attaches its own
+  identity token and forwards the request to the private Cloud Run service. It
+  is the one stable identity the service accepts, so children do not need
+  per-child audience registration. No business logic, so it never changes.
 - `master/` - the control sheet. `New tracker` copies the template, shares the
   service account, and registers the tracker. `setupMaster()` formats the panel.
 - `template/` - the sheet children are copied from. `Code.gs` is the generic
   dispatcher shim every child carries; `setupTemplate()` formats the input tabs.
 
-`.clasp.json` (the link to a specific sheet's script) is gitignored, because it
-is per-instance. The committed source is the same everywhere.
+Children and the master call the relay, not the service directly.
+
+`.clasp.json` (the link to a specific script) and `Config.gs` (per-instance
+config) are gitignored. The committed source is the same everywhere.
 
 ## One-time setup
 
@@ -19,39 +24,44 @@ npm install -g @google/clasp
 clasp login
 ```
 
-Also enable the Apps Script API once at https://script.google.com/home/usersettings
+Enable the Apps Script API once at https://script.google.com/home/usersettings
 
 ## Link and push each script
 
-Run once per instance, with the two blank sheet ids. `--parentId` binds the
-script to that sheet.
+Use `--parentId` to bind to an existing sheet (NOT `--type sheets`, which makes a
+new sheet). The relay is standalone (no parent). After `create-script`, clasp
+overwrites the local `appsscript.json` with a default; restore the committed one
+before `clasp push --force`.
 
 ```sh
+# Relay (standalone web app)
+cd apps_script/relay
+clasp create-script --title "Tracker Relay" --rootDir .
+clasp push --force
+clasp deploy            # creates a web app deployment; note the /exec URL
+
 # Master
-cd apps_script/master
-clasp create-script --type sheets --title "Tracker Admin" --parentId <MASTER_SHEET_ID> --rootDir .
+cd ../master
+clasp create-script --parentId <MASTER_SHEET_ID> --rootDir .
 clasp push --force
 
 # Template
 cd ../template
-clasp create-script --type sheets --title "Tracker Template" --parentId <TEMPLATE_SHEET_ID> --rootDir .
+clasp create-script --parentId <TEMPLATE_SHEET_ID> --rootDir .
 clasp push --force
 ```
 
-## Per-instance configuration (not in the repo)
+## Per-instance configuration (Config.gs, gitignored, pushed by clasp)
 
-Config lives in a `Config.gs` file in each folder, not in Script Properties,
-because Script Properties do not copy when a sheet is copied but script code
-does. `Config.gs` is gitignored and pushed by clasp; it is copied into every
-child, so children inherit `SERVICE_URL` automatically.
+- `relay/Config.gs`: `var SERVICE_URL` (the private Cloud Run URL)
+- `master/Config.gs`: `var RELAY_URL`, `var SERVICE_ACCOUNT_EMAIL`, `var TEMPLATE_SHEET_ID`
+- `template/Config.gs`: `var RELAY_URL` (copied into every child)
 
-- `master/Config.gs`: `var SERVICE_URL`, `var SERVICE_ACCOUNT_EMAIL`, `var TEMPLATE_SHEET_ID`
-- `template/Config.gs`: `var SERVICE_URL`
+`RELAY_URL` is the relay web app `/exec` URL from `clasp deploy`. Set it after
+the relay is deployed, then `clasp push --force` the master and template.
 
-Push after editing (`clasp push --force`), then apply formatting once:
+Apply formatting once: master `Tracker Admin > Apply formatting`; template
+`Run > setupTemplate`.
 
-- master: open it, Tracker Admin > Apply formatting (or Run > `setupMaster`)
-- template: Apps Script editor > Run > `setupTemplate`
-
-After this, push changes anytime with `clasp push -f` from the folder; redeploy
-the Cloud Run service for logic changes.
+After this, push code changes anytime with `clasp push --force`; redeploy the
+Cloud Run service for logic changes.

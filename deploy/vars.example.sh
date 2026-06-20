@@ -18,3 +18,12 @@ export BQ_TABLE="trackers"
 # read it centrally.
 export MASTER_SHEET_ID=""
 export TEMPLATE_SHEET_ID=""
+
+# Access control. ALLOWED_EMAILS is the small list of who may use the system at
+# all (comma-separated). ALLOWED_DOMAIN optionally allows any address in a
+# Workspace domain. ADMIN_EMAILS may act on any tracker (others only on ones
+# they created). RATE_LIMIT_PER_MIN is a per-caller cap (0 disables).
+export ALLOWED_EMAILS=""
+export ADMIN_EMAILS=""
+export ALLOWED_DOMAIN=""
+export RATE_LIMIT_PER_MIN="30"

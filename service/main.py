@@ -1,27 +1,26 @@
 """HTTP entry point for the tracker generator service.
 
-POST / with a JSON body and get back
-{"status": "ok|error", "message": "...", "detail": {...}}.
+The service is private; callers reach it through the relay (a standalone Apps
+Script web app), which forwards the request body and authenticates to Cloud Run
+with its single stable identity. Every request body carries the caller's Google
+identity token, which this service verifies (signature, not audience) to get the
+caller email, then gates on an allowlist, a per-caller rate limit, and, for sheet
+actions, per-tracker ownership from the BigQuery registry.
 
-Two request shapes:
+POST / with a JSON body, get back {"status": "ok|error", "message", "detail"}.
 
-  Operate on an existing sheet:
-    {"spreadsheet_id": "...", "action": "run_all|validate|generate_mapping|
-                                          create_named_ranges|build_frontend"}
+  {"token": "<caller id token>", "action": "...", "spreadsheet_id": "...", ...}
 
-  Scaffold a sheet Apps Script just created (the user owns it), and log its
-  metadata to BigQuery:
-    {"action": "scaffold", "spreadsheet_id": "...", "url": "...",
-     "title": "...", "client": "...", "sub_brand": "...", "created_by": "..."}
-
-  No sheet needed:
-    {"action": "list_actions"}  -> the child menu's available actions
-    {"action": "get_config"}    -> master and template sheet ids
+Actions: run_all, validate, generate_mapping, create_named_ranges,
+build_frontend (need a spreadsheet_id and tracker ownership); scaffold (creates
+input tabs + BigQuery row, takes url/title/client/sub_brand); list_actions and
+get_config (no sheet, allowlist only).
 
 The service is stateless. Each request builds a fresh client, runs one action,
 and returns.
 """
 
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +28,7 @@ from datetime import datetime, timezone
 from flask import Flask, jsonify, request
 from googleapiclient.errors import HttpError
 
+import auth
 import tracker
 from bq_client import BigQueryClient
 from config import DEFAULT_CONFIG
@@ -60,6 +60,20 @@ def _error(message, detail=None, code=400):
     return jsonify(status="error", message=message, detail=detail or {}), code
 
 
+def _audit(caller, action, spreadsheet_id, result, **extra):
+    """Emit one structured JSON audit line (captured by Cloud Logging)."""
+    record = {
+        "audit": True,
+        "caller": caller,
+        "action": action,
+        "spreadsheet_id": spreadsheet_id,
+        "result": result,
+        "ts": datetime.now(timezone.utc).isoformat(),
+    }
+    record.update(extra)
+    print(json.dumps(record), flush=True)
+
+
 def _run(work, ok_message):
     """Run a unit of work and map any failure to a JSON error response."""
     try:
@@ -78,14 +92,10 @@ def healthz():
     return jsonify(status="ok", message="alive", detail={})
 
 
-# Fields the caller must supply on scaffold, so every tracker is logged with
-# the metadata the audit log needs.
-SCAFFOLD_REQUIRED = ["spreadsheet_id", "title", "client", "sub_brand", "created_by"]
-
-
-def _scaffold(payload):
+def _scaffold(payload, caller):
     """Scaffold a newly created sheet and log its metadata to BigQuery."""
-    missing = [field for field in SCAFFOLD_REQUIRED if not payload.get(field)]
+    required = ["spreadsheet_id", "title", "client", "sub_brand"]
+    missing = [field for field in required if not payload.get(field)]
     if missing:
         return _error("Missing fields: " + ", ".join(missing), code=400)
 
@@ -106,7 +116,8 @@ def _scaffold(payload):
             title=payload.get("title", ""),
             client=payload.get("client", ""),
             sub_brand=payload.get("sub_brand", ""),
-            created_by=payload.get("created_by", ""),
+            # created_by is the verified caller, not a value the client asserts.
+            created_by=caller,
             status="active",
             # Cloud Run injects K_REVISION; blank when running locally.
             service_revision=os.environ.get("K_REVISION", ""),
@@ -125,15 +136,25 @@ def _scaffold(payload):
 def handle():
     payload = request.get_json(silent=True) or {}
     action = payload.get("action")
+    cfg = DEFAULT_CONFIG
 
+    # Authenticate the caller from the token the relay forwarded, then gate on
+    # the allowlist and the per-caller rate limit.
+    try:
+        caller = auth.verify_caller(payload.get("token"))
+        if not auth.is_allowed(caller, cfg):
+            raise auth.AuthError("Caller not allowed", 403)
+        auth.check_rate_limit(caller, cfg.rate_limit_per_min)
+    except auth.AuthError as exc:
+        _audit(getattr(exc, "email", None), action, payload.get("spreadsheet_id"),
+               "denied", reason=exc.message)
+        return _error(exc.message, code=exc.code)
+
+    # Actions that need no sheet (allowlisted callers only, already checked).
     if action == "list_actions":
-        # Drives the child shim's "More actions" menu. No sheet needed.
         return jsonify(status="ok", message="ok", detail={"actions": MENU_ACTIONS})
 
     if action == "get_config":
-        # Lets the master Apps Script read the template id centrally rather
-        # than hardcoding it. No sheet needed.
-        cfg = DEFAULT_CONFIG
         return jsonify(
             status="ok",
             message="ok",
@@ -144,7 +165,8 @@ def handle():
         )
 
     if action == "scaffold":
-        return _scaffold(payload)
+        _audit(caller, action, payload.get("spreadsheet_id"), "start")
+        return _scaffold(payload, caller)
 
     spreadsheet_id = payload.get("spreadsheet_id")
     if not spreadsheet_id:
@@ -159,9 +181,22 @@ def handle():
             400,
         )
 
+    # Per-spreadsheet authorization: a caller may act only on a tracker they
+    # created, unless they are an admin.
+    if not auth.is_admin(caller, cfg):
+        owner = None
+        if cfg.bigquery_dataset:
+            owner = BigQueryClient(cfg.bigquery_project).created_by(
+                cfg.bigquery_dataset, cfg.bigquery_table, spreadsheet_id
+            )
+        if not owner or owner.lower() != caller:
+            _audit(caller, action, spreadsheet_id, "denied", reason="not owner")
+            return _error("Not authorized for this tracker", code=403)
+
+    _audit(caller, action, spreadsheet_id, "start")
     client = SheetsClient(spreadsheet_id)
     return _run(
-        lambda: SHEET_ACTIONS[action](client, DEFAULT_CONFIG),
+        lambda: SHEET_ACTIONS[action](client, cfg),
         "{} completed".format(action),
     )
 

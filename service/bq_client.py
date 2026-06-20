@@ -23,3 +23,21 @@ class BigQueryClient:
         errors = self.client.insert_rows_json(table_ref, [row])
         if errors:
             raise RuntimeError("BigQuery insert failed: {}".format(errors))
+
+    def created_by(self, dataset, table, spreadsheet_id):
+        """Return the most recent created_by for a tracker, or None if unknown.
+
+        Used for per-spreadsheet authorization. Needs the BigQuery Job User role
+        to run the query. Rows still in the streaming buffer may not appear yet.
+        """
+        query = (
+            "SELECT created_by FROM `{p}.{d}.{t}` "
+            "WHERE spreadsheet_id = @id ORDER BY created_at DESC LIMIT 1"
+        ).format(p=self.client.project, d=dataset, t=table)
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("id", "STRING", spreadsheet_id)
+            ]
+        )
+        rows = list(self.client.query(query, job_config=job_config).result())
+        return rows[0]["created_by"] if rows else None

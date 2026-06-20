@@ -65,16 +65,18 @@ function dispatchAction(action) {
 }
 
 function callService_(action) {
-  var url = (typeof SERVICE_URL !== 'undefined') ? SERVICE_URL : '';
+  var url = (typeof RELAY_URL !== 'undefined') ? RELAY_URL : '';
   if (!url) {
-    SpreadsheetApp.getUi().alert('SERVICE_URL is not set in Config.gs.');
+    SpreadsheetApp.getUi().alert('RELAY_URL is not set in Config.gs.');
     return null;
   }
+  // Call the relay; our identity token rides in the body for the service to
+  // verify. The relay forwards it to the private service.
   var options = {
     method: 'post',
     contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + ScriptApp.getIdentityToken() },
     payload: JSON.stringify({
+      token: ScriptApp.getIdentityToken(),
       spreadsheet_id: SpreadsheetApp.getActiveSpreadsheet().getId(),
       action: action
     }),

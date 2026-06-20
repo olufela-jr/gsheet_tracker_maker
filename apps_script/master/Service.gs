@@ -64,13 +64,32 @@ function createTracker() {
     created_by: Session.getEffectiveUser().getEmail()
   });
   if (parsed && parsed.status === 'ok') {
-    ui.alert('New tracker created:\n\n' + childUrl);
+    // Non-blocking: a toast plus a clickable link logged on the Admin tab,
+    // so creating trackers in a row does not require dismissing a dialog.
+    SpreadsheetApp.getActiveSpreadsheet().toast(title + ' created', 'New tracker', 5);
+    logCreatedTracker_(title, client, subBrand, childUrl);
   } else {
     ui.alert(
       'Created the sheet but registration failed: ' +
       ((parsed && parsed.message) || 'unknown error')
     );
   }
+}
+
+/**
+ * Append a clickable record of the new tracker to the Admin tab, so the URL is
+ * captured without a blocking dialog.
+ */
+function logCreatedTracker_(title, client, subBrand, url) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Admin');
+  if (!sheet) {
+    return;
+  }
+  var label = String(title).replace(/"/g, '""');
+  var row = sheet.getLastRow() + 1;
+  sheet.getRange(row, 1).setValue(new Date());
+  sheet.getRange(row, 2).setValue(client + ' / ' + subBrand);
+  sheet.getRange(row, 3).setFormula('=HYPERLINK("' + url + '","' + label + '")');
 }
 
 /**
@@ -106,15 +125,17 @@ function promptRequired_(ui, title, label) {
 }
 
 function postToService_(payload) {
-  var url = (typeof SERVICE_URL !== 'undefined') ? SERVICE_URL : '';
+  var url = (typeof RELAY_URL !== 'undefined') ? RELAY_URL : '';
   if (!url) {
-    SpreadsheetApp.getUi().alert('SERVICE_URL is not set in Config.gs.');
+    SpreadsheetApp.getUi().alert('RELAY_URL is not set in Config.gs.');
     return null;
   }
+  // Call the relay; our identity token rides in the body for the service to
+  // verify. The relay forwards it to the private service.
+  payload.token = ScriptApp.getIdentityToken();
   var options = {
     method: 'post',
     contentType: 'application/json',
-    headers: { Authorization: 'Bearer ' + ScriptApp.getIdentityToken() },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };

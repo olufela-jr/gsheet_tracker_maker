@@ -8,11 +8,13 @@
 
 source "$(dirname "$0")/_load.sh"
 
+# Env vars use a custom delimiter (^@@^) because ALLOWED_EMAILS / ADMIN_EMAILS
+# can contain commas, which is gcloud's default delimiter.
 gcloud run deploy "${SERVICE_NAME}" \
   --source "${REPO_ROOT}/service" \
   --region "${REGION}" \
   --service-account "${SA_EMAIL}" \
-  --set-env-vars "BIGQUERY_PROJECT=${PROJECT_ID},BIGQUERY_DATASET=${BQ_DATASET},BIGQUERY_TABLE=${BQ_TABLE},MASTER_SHEET_ID=${MASTER_SHEET_ID},TEMPLATE_SHEET_ID=${TEMPLATE_SHEET_ID}" \
+  --set-env-vars "^@@^BIGQUERY_PROJECT=${PROJECT_ID}@@BIGQUERY_DATASET=${BQ_DATASET}@@BIGQUERY_TABLE=${BQ_TABLE}@@MASTER_SHEET_ID=${MASTER_SHEET_ID}@@TEMPLATE_SHEET_ID=${TEMPLATE_SHEET_ID}@@ALLOWED_EMAILS=${ALLOWED_EMAILS}@@ADMIN_EMAILS=${ADMIN_EMAILS}@@ALLOWED_DOMAIN=${ALLOWED_DOMAIN}@@RATE_LIMIT_PER_MIN=${RATE_LIMIT_PER_MIN}" \
   --no-allow-unauthenticated
 
 echo

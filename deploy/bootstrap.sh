@@ -67,6 +67,12 @@ if [ -n "${BQ_DATASET:-}" ]; then
       event_id:STRING,created_at:TIMESTAMP,spreadsheet_id:STRING,url:STRING,title:STRING,client:STRING,sub_brand:STRING,created_by:STRING,status:STRING,service_revision:STRING
   fi
 
+  # Running queries (per-spreadsheet authorization reads created_by) needs the
+  # Job User role at the project level; dataset access alone is not enough.
+  gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+    --member="serviceAccount:${SA_EMAIL}" \
+    --role="roles/bigquery.jobUser" --condition=None >/dev/null
+
   # Grant the service account write access to this dataset only, via the
   # dataset ACL (works without the IAM-on-datasets allowlist). Idempotent: the
   # WRITER entry is only added if it is not already present.
