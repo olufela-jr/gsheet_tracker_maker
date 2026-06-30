@@ -1,20 +1,17 @@
-# Apps Script (relay + master + template)
+# Apps Script (master only)
 
-Three scripts, managed with [clasp](https://github.com/google/clasp) so the code
-and the sheet formatting live in this repo and can be pushed to any instance.
+One script, managed with [clasp](https://github.com/google/clasp). It is the
+ONLY script in the system - trackers carry no script at all.
 
-- `relay/` - a standalone web app. A dumb pass-through: it attaches its own
-  identity token and forwards the request to the private Cloud Run service. It
-  is the one stable identity the service accepts, so children do not need
-  per-child audience registration. No business logic, so it never changes.
-- `master/` - the control sheet. `New tracker` copies the template, shares the
-  service account, and registers the tracker. `setupMaster()` formats the panel.
-- `template/` - the sheet children are copied from. `Code.gs` is the generic
-  dispatcher shim every child carries; `setupTemplate()` formats the input tabs.
+- `master/` - the control sheet. `New tracker` creates a clean sheet (the
+  operator owns it), shares the service account, and has the service scaffold +
+  format it. `Operate on tracker` points the service at any sheet by URL and
+  runs an action. `setupMaster()` formats the control panel.
 
-Children and the master call the relay, not the service directly.
+Trackers are pure data: no bound script, no per-sheet authorization, nothing to
+keep in sync.
 
-`.clasp.json` (the link to a specific script) and `Config.gs` (per-instance
+`.clasp.json` (the link to the master's script) and `Config.gs` (per-instance
 config) are gitignored. The committed source is the same everywhere.
 
 ## One-time setup
@@ -26,42 +23,26 @@ clasp login
 
 Enable the Apps Script API once at https://script.google.com/home/usersettings
 
-## Link and push each script
+## Link and push the master
 
-Use `--parentId` to bind to an existing sheet (NOT `--type sheets`, which makes a
-new sheet). The relay is standalone (no parent). After `create-script`, clasp
-overwrites the local `appsscript.json` with a default; restore the committed one
-before `clasp push --force`.
+Use `--parentId` to bind to the existing master sheet (NOT `--type sheets`,
+which makes a new sheet). After `create-script`, clasp overwrites the local
+`appsscript.json` with a default; restore the committed one before `push`.
 
 ```sh
-# Relay (standalone web app)
-cd apps_script/relay
-clasp create-script --title "Tracker Relay" --rootDir .
-clasp push --force
-clasp deploy            # creates a web app deployment; note the /exec URL
-
-# Master
-cd ../master
+cd apps_script/master
 clasp create-script --parentId <MASTER_SHEET_ID> --rootDir .
-clasp push --force
-
-# Template
-cd ../template
-clasp create-script --parentId <TEMPLATE_SHEET_ID> --rootDir .
 clasp push --force
 ```
 
+Authorize the master once (Run any function, accept the consent including the
+external-request scope). That is the only authorization in the whole system.
+
 ## Per-instance configuration (Config.gs, gitignored, pushed by clasp)
 
-- `relay/Config.gs`: `var SERVICE_URL` (the private Cloud Run URL)
-- `master/Config.gs`: `var RELAY_URL`, `var SERVICE_ACCOUNT_EMAIL`, `var TEMPLATE_SHEET_ID`
-- `template/Config.gs`: `var RELAY_URL` (copied into every child)
+- `master/Config.gs`: `var SERVICE_URL` (the private Cloud Run URL),
+  `var SERVICE_ACCOUNT_EMAIL`
 
-`RELAY_URL` is the relay web app `/exec` URL from `clasp deploy`. Set it after
-the relay is deployed, then `clasp push --force` the master and template.
-
-Apply formatting once: master `Tracker Admin > Apply formatting`; template
-`Run > setupTemplate`.
-
-After this, push code changes anytime with `clasp push --force`; redeploy the
-Cloud Run service for logic changes.
+Apply formatting once: `Tracker Admin > Apply formatting`. Push code changes
+anytime with `clasp push --force`; redeploy the Cloud Run service for logic
+changes.

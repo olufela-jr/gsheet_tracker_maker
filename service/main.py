@@ -1,11 +1,12 @@
 """HTTP entry point for the tracker generator service.
 
-The service is private; callers reach it through the relay (a standalone Apps
-Script web app), which forwards the request body and authenticates to Cloud Run
-with its single stable identity. Every request body carries the caller's Google
-identity token, which this service verifies (signature, not audience) to get the
-caller email, then gates on an allowlist, a per-caller rate limit, and, for sheet
-actions, per-tracker ownership from the BigQuery registry.
+The service is private. The master control sheet (the only Apps Script) calls it
+directly: its identity token authenticates to Cloud Run (its audience is
+registered; the operator has run.invoker), and the same token rides in the body
+so the service can verify it (signature, not audience) to get the caller email.
+The service then gates on an allowlist, a per-caller rate limit, and, for sheet
+actions, per-tracker ownership from the BigQuery registry (a brought-in sheet is
+claimed by its first operator).
 
 POST / with a JSON body, get back {"status": "ok|error", "message", "detail"}.
 
@@ -13,8 +14,7 @@ POST / with a JSON body, get back {"status": "ok|error", "message", "detail"}.
 
 Actions: run_all, validate, generate_mapping, create_named_ranges,
 build_frontend (need a spreadsheet_id and tracker ownership); scaffold (creates
-input tabs + BigQuery row, takes url/title/client/sub_brand); list_actions and
-get_config (no sheet, allowlist only).
++ formats input tabs, logs a BigQuery row); list_actions (no sheet).
 
 The service is stateless. Each request builds a fresh client, runs one action,
 and returns.
@@ -132,13 +132,37 @@ def _scaffold(payload, caller):
     return _run(work, "scaffold completed")
 
 
+def _claim_tracker(cfg, spreadsheet_id, caller):
+    """Register a brought-in sheet to its first operator, so later operations
+    enforce ownership. Best-effort; a logging failure must not block the action.
+    """
+    if not cfg.bigquery_dataset:
+        return
+    record = tracker.build_tracker_record(
+        event_id=str(uuid.uuid4()),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        spreadsheet_id=spreadsheet_id,
+        url="",
+        title="",
+        client="",
+        sub_brand="",
+        created_by=caller,
+        status="claimed",
+        service_revision=os.environ.get("K_REVISION", ""),
+    )
+    try:
+        tracker.log_tracker(BigQueryClient(cfg.bigquery_project), cfg, record)
+    except Exception:  # noqa: BLE001 - claiming is best-effort
+        pass
+
+
 @app.post("/")
 def handle():
     payload = request.get_json(silent=True) or {}
     action = payload.get("action")
     cfg = DEFAULT_CONFIG
 
-    # Authenticate the caller from the token the relay forwarded, then gate on
+    # Authenticate the caller from the token in the request body, then gate on
     # the allowlist and the per-caller rate limit.
     try:
         caller = auth.verify_caller(payload.get("token"))
@@ -154,16 +178,6 @@ def handle():
     if action == "list_actions":
         return jsonify(status="ok", message="ok", detail={"actions": MENU_ACTIONS})
 
-    if action == "get_config":
-        return jsonify(
-            status="ok",
-            message="ok",
-            detail={
-                "master_sheet_id": cfg.master_sheet_id,
-                "template_sheet_id": cfg.template_sheet_id,
-            },
-        )
-
     if action == "scaffold":
         _audit(caller, action, payload.get("spreadsheet_id"), "start")
         return _scaffold(payload, caller)
@@ -174,22 +188,22 @@ def handle():
     if action not in SHEET_ACTIONS:
         return _error(
             "Unknown action '{}'".format(action),
-            {
-                "actions": sorted(SHEET_ACTIONS.keys())
-                + ["scaffold", "list_actions", "get_config"]
-            },
+            {"actions": sorted(SHEET_ACTIONS.keys()) + ["scaffold", "list_actions"]},
             400,
         )
 
-    # Per-spreadsheet authorization: a caller may act only on a tracker they
-    # created, unless they are an admin.
+    # Per-spreadsheet authorization. A caller may act on a tracker they created,
+    # or one not yet in the registry (a brought-in sheet) which they then claim.
+    # Admins may act on anything.
     if not auth.is_admin(caller, cfg):
         owner = None
         if cfg.bigquery_dataset:
             owner = BigQueryClient(cfg.bigquery_project).created_by(
                 cfg.bigquery_dataset, cfg.bigquery_table, spreadsheet_id
             )
-        if not owner or owner.lower() != caller:
+        if owner is None:
+            _claim_tracker(cfg, spreadsheet_id, caller)  # brought-in sheet
+        elif owner.lower() != caller:
             _audit(caller, action, spreadsheet_id, "denied", reason="not owner")
             return _error("Not authorized for this tracker", code=403)
 

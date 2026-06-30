@@ -1,9 +1,9 @@
 """Caller authentication and authorization for the service.
 
-The relay forwards the caller's Google identity token in the request body. We
-verify it here (signature, issuer, expiry) and ignore its audience, which is
-what lets any child work without per-child Cloud Run config. Access is then
-gated by an allowlist, a per-caller rate limit, and per-spreadsheet ownership.
+The master sends the caller's Google identity token in the request body. We
+verify it here (signature, issuer, expiry) and ignore its audience. Access is
+then gated by an allowlist, a per-caller rate limit, and per-spreadsheet
+ownership.
 """
 
 import threading

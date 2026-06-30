@@ -31,14 +31,7 @@ BIGQUERY_PROJECT = os.environ.get("BIGQUERY_PROJECT", "")
 BIGQUERY_DATASET = os.environ.get("BIGQUERY_DATASET", "")
 BIGQUERY_TABLE = os.environ.get("BIGQUERY_TABLE", "trackers")
 
-# The control sheets. The master is the control panel users create trackers
-# from; the template is the sheet (with the dispatcher shim) that children are
-# copied from. Held here so the service is the single source of truth and the
-# master Apps Script can fetch the template id rather than hardcoding it.
-MASTER_SHEET_ID = os.environ.get("MASTER_SHEET_ID", "")
-TEMPLATE_SHEET_ID = os.environ.get("TEMPLATE_SHEET_ID", "")
-
-# Access control. The relay forwards the caller's identity token; the service
+# Access control. The master sends the caller's identity token; the service
 # verifies it and gates on these. ALLOWED_EMAILS / ALLOWED_DOMAIN decide who may
 # use the system at all; ADMIN_EMAILS may act on any tracker (others only on
 # trackers they created). RATE_LIMIT_PER_MIN is a per-caller cap (0 disables).
@@ -61,8 +54,6 @@ class Config:
     bigquery_project: str = BIGQUERY_PROJECT
     bigquery_dataset: str = BIGQUERY_DATASET
     bigquery_table: str = BIGQUERY_TABLE
-    master_sheet_id: str = MASTER_SHEET_ID
-    template_sheet_id: str = TEMPLATE_SHEET_ID
     allowed_emails: str = ALLOWED_EMAILS
     admin_emails: str = ADMIN_EMAILS
     allowed_domain: str = ALLOWED_DOMAIN

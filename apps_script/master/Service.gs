@@ -1,14 +1,16 @@
 /**
  * Master control sheet logic.
  *
- * createTracker copies the template as the clicking user (so the user owns the
- * child and it carries the dispatcher shim), shares the service account, then
- * asks the service to scaffold the input tabs and log the tracker to BigQuery.
+ * createTracker:  create a clean sheet (no script), the operator owns it, share
+ *                 the service account, then have the service scaffold + format
+ *                 it and log it to BigQuery.
+ * operateOnTracker: point the service at any sheet by URL and run an action.
  *
- * Script Properties used:
- *   SERVICE_URL            the Cloud Run service URL
- *   SERVICE_ACCOUNT_EMAIL  shared as editor on each child
- *   TEMPLATE_SHEET_ID      fallback if the service get_config has no template id
+ * The master calls the private service directly. The operator's identity token
+ * authenticates to Cloud Run (its audience is registered; the operator has
+ * run.invoker) and also rides in the body so the service can verify the caller.
+ *
+ * Config.gs (gitignored) provides SERVICE_URL and SERVICE_ACCOUNT_EMAIL.
  */
 
 function createTracker() {
@@ -29,45 +31,22 @@ function createTracker() {
   }
   var title = titleResponse.getResponseText() || 'Performance Tracker';
 
-  var templateId = getTemplateId_();
-  if (!templateId) {
-    return;
-  }
+  // Create AS the operator (they own it), then let the service account edit it.
+  var ss = SpreadsheetApp.create(title);
+  shareWithServiceAccount_(ss);
+  var url = ss.getUrl();
 
-  // Copy the template AS the user, so the user owns the child and it inherits
-  // the bound dispatcher shim.
-  var copy;
-  try {
-    copy = DriveApp.getFileById(templateId).makeCopy(title);
-  } catch (err) {
-    ui.alert('Could not copy the template: ' + err);
-    return;
-  }
-  var childId = copy.getId();
-  var childUrl = 'https://docs.google.com/spreadsheets/d/' + childId + '/edit';
-
-  // Let the service account edit it.
-  var serviceAccount =
-    (typeof SERVICE_ACCOUNT_EMAIL !== 'undefined') ? SERVICE_ACCOUNT_EMAIL : '';
-  if (serviceAccount) {
-    copy.addEditor(serviceAccount);
-  }
-
-  // Register: scaffold the input tabs and log the tracker to BigQuery.
   var parsed = postToService_({
     action: 'scaffold',
-    spreadsheet_id: childId,
-    url: childUrl,
+    spreadsheet_id: ss.getId(),
+    url: url,
     title: title,
     client: client,
-    sub_brand: subBrand,
-    created_by: Session.getEffectiveUser().getEmail()
+    sub_brand: subBrand
   });
   if (parsed && parsed.status === 'ok') {
-    // Non-blocking: a toast plus a clickable link logged on the Admin tab,
-    // so creating trackers in a row does not require dismissing a dialog.
     SpreadsheetApp.getActiveSpreadsheet().toast(title + ' created', 'New tracker', 5);
-    logCreatedTracker_(title, client, subBrand, childUrl);
+    logCreatedTracker_(title, client, subBrand, url);
   } else {
     ui.alert(
       'Created the sheet but registration failed: ' +
@@ -76,38 +55,79 @@ function createTracker() {
   }
 }
 
-/**
- * Append a clickable record of the new tracker to the Admin tab, so the URL is
- * captured without a blocking dialog.
- */
-function logCreatedTracker_(title, client, subBrand, url) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Admin');
-  if (!sheet) {
+function operateOnTracker() {
+  var ui = SpreadsheetApp.getUi();
+  var response = ui.prompt(
+    'Operate on tracker', 'Paste the tracker sheet URL (or ID):',
+    ui.ButtonSet.OK_CANCEL);
+  if (response.getSelectedButton() !== ui.Button.OK) {
     return;
   }
-  var label = String(title).replace(/"/g, '""');
-  var row = sheet.getLastRow() + 1;
-  sheet.getRange(row, 1).setValue(new Date());
-  sheet.getRange(row, 2).setValue(client + ' / ' + subBrand);
-  sheet.getRange(row, 3).setFormula('=HYPERLINK("' + url + '","' + label + '")');
+  var id = parseSheetId_(response.getResponseText());
+  if (!id) {
+    ui.alert('Could not read a sheet ID from that.');
+    return;
+  }
+
+  // The service account must be able to edit the sheet. The operator must be
+  // able to share it (own/edit it) for this to succeed.
+  try {
+    shareWithServiceAccount_(SpreadsheetApp.openById(id));
+  } catch (err) {
+    ui.alert('Could not share that sheet with the service account: ' + err);
+    return;
+  }
+
+  var parsed = postToService_({ action: 'list_actions' });
+  if (!parsed || parsed.status !== 'ok') {
+    ui.alert('Could not load actions: ' + (parsed && parsed.message));
+    return;
+  }
+  var actions = (parsed.detail && parsed.detail.actions) || [];
+  var buttons = actions
+    .map(function (a) {
+      return '<button style="margin:4px 0;width:100%" onclick="run(\'' +
+        a.action + '\')">' + a.label + '</button>';
+    })
+    .join('');
+  var html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial,sans-serif;padding:8px">' + buttons +
+    '<p id="msg" style="color:#5f6368"></p></div>' +
+    '<script>function run(a){' +
+    'document.getElementById("msg").innerText="Running "+a+"...";' +
+    'google.script.run.withSuccessHandler(function(m){' +
+    'document.getElementById("msg").innerText=m;}).runActionOnTarget(a,"' + id + '");}' +
+    '</script>'
+  ).setWidth(280).setHeight(320);
+  ui.showModalDialog(html, 'Operate on tracker');
 }
 
-/**
- * Prefer the template id from the service (central source of truth); fall back
- * to a Script Property.
- */
-function getTemplateId_() {
-  var parsed = postToService_({ action: 'get_config' });
-  if (parsed && parsed.status === 'ok' && parsed.detail &&
-      parsed.detail.template_sheet_id) {
-    return parsed.detail.template_sheet_id;
+/** Called from the operate dialog; runs one action on the target sheet. */
+function runActionOnTarget(action, spreadsheetId) {
+  var parsed = postToService_({ action: action, spreadsheet_id: spreadsheetId });
+  if (parsed && parsed.status === 'ok') {
+    return action + ': ' + (parsed.message || 'done');
   }
-  var fallback = (typeof TEMPLATE_SHEET_ID !== 'undefined') ? TEMPLATE_SHEET_ID : '';
-  if (!fallback) {
-    SpreadsheetApp.getUi().alert(
-      'No template id from the service and none in Config.gs.');
+  return action + ' failed: ' + ((parsed && parsed.message) || 'unknown error');
+}
+
+function shareWithServiceAccount_(spreadsheet) {
+  var sa = (typeof SERVICE_ACCOUNT_EMAIL !== 'undefined') ? SERVICE_ACCOUNT_EMAIL : '';
+  if (sa) {
+    spreadsheet.addEditor(sa);
   }
-  return fallback;
+}
+
+function parseSheetId_(text) {
+  if (!text) {
+    return '';
+  }
+  text = text.trim();
+  var match = text.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  if (match) {
+    return match[1];
+  }
+  return /^[a-zA-Z0-9-_]+$/.test(text) ? text : '';
 }
 
 function promptRequired_(ui, title, label) {
@@ -124,18 +144,36 @@ function promptRequired_(ui, title, label) {
   }
 }
 
+/**
+ * Append a clickable record of a created tracker to the Admin tab, so the URL
+ * is captured without a blocking dialog.
+ */
+function logCreatedTracker_(title, client, subBrand, url) {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Admin');
+  if (!sheet) {
+    return;
+  }
+  var label = String(title).replace(/"/g, '""');
+  var row = sheet.getLastRow() + 1;
+  sheet.getRange(row, 1).setValue(new Date());
+  sheet.getRange(row, 2).setValue(client + ' / ' + subBrand);
+  sheet.getRange(row, 3).setFormula('=HYPERLINK("' + url + '","' + label + '")');
+}
+
 function postToService_(payload) {
-  var url = (typeof RELAY_URL !== 'undefined') ? RELAY_URL : '';
+  var url = (typeof SERVICE_URL !== 'undefined') ? SERVICE_URL : '';
   if (!url) {
-    SpreadsheetApp.getUi().alert('RELAY_URL is not set in Config.gs.');
+    SpreadsheetApp.getUi().alert('SERVICE_URL is not set in Config.gs.');
     return null;
   }
-  // Call the relay; our identity token rides in the body for the service to
-  // verify. The relay forwards it to the private service.
-  payload.token = ScriptApp.getIdentityToken();
+  // The operator's identity token authenticates to Cloud Run (header) and is
+  // verified by the service (body).
+  var token = ScriptApp.getIdentityToken();
+  payload.token = token;
   var options = {
     method: 'post',
     contentType: 'application/json',
+    headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };

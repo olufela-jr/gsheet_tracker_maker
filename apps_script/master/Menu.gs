@@ -1,14 +1,15 @@
 /**
  * Master control sheet menu.
  *
- * The master is where users mint new trackers. It holds no generation logic;
- * "New tracker" copies the template (so the child carries the dispatcher shim)
- * and registers the child with the service.
+ * The master is the only Apps Script in the system. Trackers carry no script;
+ * the master both creates them and operates on them by pointing the private
+ * service at a sheet. All logic lives in the service.
  */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Tracker Admin')
     .addItem('New tracker', 'createTracker')
+    .addItem('Operate on tracker', 'operateOnTracker')
     .addSeparator()
     .addItem('Apply formatting', 'setupMaster')
     .addToUi();

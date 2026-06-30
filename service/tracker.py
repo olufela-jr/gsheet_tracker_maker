@@ -420,16 +420,38 @@ def scaffold(client, cfg):
 
     # Seed the setup header only when we just created the setup tab, so an
     # existing setup the user has filled in is never overwritten.
-    if cfg.setup_tab.lower() in {m.lower() for m in missing}:
+    created_setup = cfg.setup_tab.lower() in {m.lower() for m in missing}
+    if created_setup:
         client.write_values(
             a1(cfg.setup_tab, "A1:B1"), [["Field", "Type"]], value_input_option="RAW"
         )
+
+    # Format any input tab we just created (header banner, frozen row, widths,
+    # notes). Existing tabs are left as the user has them.
+    titles = existing_titles(client)
+    setup_id = _created_sheet_id(titles, cfg.setup_tab, missing)
+    data_source_id = _created_sheet_id(titles, cfg.data_source_tab, missing)
+    fmt = theme.input_tab_format_requests(setup_id, data_source_id)
+    if fmt:
+        client.batch_update(fmt)
 
     return {
         "spreadsheet_id": client.spreadsheet_id,
         "input_tabs": wanted,
         "created": missing,
     }
+
+
+def _created_sheet_id(titles, tab, missing):
+    """sheetId of a tab we just created (in `missing`), else None.
+
+    Only newly created tabs are formatted, so we never reformat a tab the user
+    already had.
+    """
+    if tab.lower() not in {m.lower() for m in missing}:
+        return None
+    entry = titles.get(tab.lower())
+    return entry[1] if entry else None
 
 
 # Columns of the BigQuery audit table, in schema order.

@@ -4,30 +4,24 @@ GSHEET TRACKER MAKER - SETUP GUIDE
 
 What this is
 ------------
-A system for creating performance-tracker Google Sheets at scale.
+A system for creating and maintaining performance-tracker Google Sheets at scale.
 
   - Cloud Run service (Python)  = the brain. ALL logic AND access control live
-                                  here: it verifies the caller's identity token,
-                                  checks the allowlist, rate-limits, and enforces
-                                  per-tracker ownership. Advance it by redeploying.
-  - Relay (Apps Script web app) = a dumb pass-through. Children and the master
-                                  call it; it attaches its own (single, stable)
-                                  identity and forwards to the private service.
-                                  This is what lets unlimited children work
-                                  without per-child audience registration.
-  - Master control sheet        = where users click "New tracker".
-  - Template sheet              = what each tracker is copied from. Holds a tiny
-                                  generic shim that just calls the relay.
-  - Child trackers              = copies of the template, owned by whoever made
-                                  them. Logged to BigQuery.
+                                  here. It verifies the caller's identity token,
+                                  checks the allowlist, rate-limits, enforces
+                                  per-tracker ownership, and does the work.
+  - Master control sheet        = the ONLY Apps Script. "New tracker" creates a
+                                  clean sheet; "Operate on tracker" points the
+                                  service at any sheet by URL.
+  - Trackers                    = pure data. No script, no per-sheet auth ever.
+                                  Owned by whoever created them. Logged to BigQuery.
 
-Every Apps Script piece is thin; all logic and auth are server-side. Repo layout:
+The master is the only place with a script and the only thing that calls the
+service. Repo layout:
 
   service/        the Cloud Run service (logic + auth)
   apps_script/
-    relay/        the standalone relay web app
-    master/       the master control sheet's bound script
-    template/     the child shim + sheet formatting
+    master/       the master control sheet's bound script (the only script)
   deploy/         parameterized deploy scripts (bootstrap, deploy, test, vars)
 
 
@@ -49,23 +43,20 @@ STEP 1 - Configure deploy variables
 -----------------------------------
   cd deploy
   cp vars.example.sh vars.sh
-  # edit vars.sh: PROJECT_ID, BILLING_ACCOUNT, REGION, BQ_*, etc.
-  # leave MASTER_SHEET_ID / TEMPLATE_SHEET_ID blank for now.
+  # edit vars.sh: PROJECT_ID, BILLING_ACCOUNT, REGION, BQ_*, and access control
+  # (ALLOWED_EMAILS, ADMIN_EMAILS, ALLOWED_DOMAIN, RATE_LIMIT_PER_MIN).
 
 STEP 2 - Bootstrap the cloud project
 ------------------------------------
   ./bootstrap.sh
-  # Creates (idempotent): the project, billing link, APIs, the runtime service
-  # account, the BigQuery audit dataset+table, and the Artifact Registry repo.
-  # Prints the service account email - you will share sheets with it.
+  # Idempotent. Creates: the project, billing link, APIs, the runtime service
+  # account, the BigQuery audit dataset+table (+ Job User for reads), and the
+  # Artifact Registry repo. Prints the service account email.
 
-STEP 3 - Create the two control sheets
---------------------------------------
-  In your browser, create two blank Google Sheets:
-    - one becomes the MASTER (control panel)
-    - one becomes the TEMPLATE
-  Copy each id from its URL (/spreadsheets/d/<ID>/edit) into deploy/vars.sh as
-  MASTER_SHEET_ID and TEMPLATE_SHEET_ID.
+STEP 3 - Create the master sheet
+--------------------------------
+  In your browser, create one blank Google Sheet to be the master control panel.
+  Note its id from the URL (/spreadsheets/d/<ID>/edit).
 
 STEP 4 - Deploy the service
 ---------------------------
@@ -73,114 +64,86 @@ STEP 4 - Deploy the service
   # Builds and deploys to Cloud Run (private, runs as the service account).
   # Note the printed Service URL.
 
-STEP 5 - Wire up the Apps Script with clasp
--------------------------------------------
-  Use --parentId to bind to an existing sheet (NOT --type sheets, which makes a
-  NEW sheet). The relay is standalone. After create-script, clasp overwrites the
-  local appsscript.json with a default; restore the committed one before push.
+STEP 5 - Link and push the master with clasp
+--------------------------------------------
+  Bind the master folder to the master sheet (--parentId, NOT --type sheets).
+  After create-script, restore the committed appsscript.json (clasp overwrites
+  it with a default), then push.
 
-    # RELAY (standalone web app)
-    cd apps_script/relay
-    clasp create-script --title "Tracker Relay" --rootDir .
-    # restore appsscript.json (see GOTCHAS), then:
-    clasp push --force
-    clasp deploy        # creates a web app deployment; note its /exec URL
-    # Open the script once and authorize it (it runs as you / "execute as me").
-
-    # MASTER
-    cd ../master
+    cd apps_script/master
     clasp create-script --parentId <MASTER_SHEET_ID> --rootDir .
-    clasp push --force   # restore appsscript.json first
+    clasp push --force
 
-    # TEMPLATE
-    cd ../template
-    clasp create-script --parentId <TEMPLATE_SHEET_ID> --rootDir .
-    clasp push --force   # restore appsscript.json first
+  Authorize the master once (Run any function, accept the consent). This is the
+  only authorization in the entire system.
 
-STEP 6 - Create Config.gs in each folder
-----------------------------------------
-  Per-instance config lives in Config.gs (gitignored), NOT in Script Properties,
-  because Script Properties do NOT copy when a sheet is copied but script code
-  does. clasp pushes Config.gs, and the template's copies into every child.
-
-    apps_script/relay/Config.gs:
-      var SERVICE_URL = '<the private Cloud Run URL from step 4>';
+STEP 6 - Create master/Config.gs
+--------------------------------
+  Per-instance config lives in Config.gs (gitignored, pushed by clasp):
 
     apps_script/master/Config.gs:
-      var RELAY_URL = '<the relay /exec URL from step 5>';
+      var SERVICE_URL = '<the Service URL from step 4>';
       var SERVICE_ACCOUNT_EMAIL = '<the SA email from step 2>';
-      var TEMPLATE_SHEET_ID = '<template id>';
 
-    apps_script/template/Config.gs:
-      var RELAY_URL = '<the relay /exec URL from step 5>';
+  Then: clasp push --force
 
-  Then push:  (relay) clasp push --force
-              (master) clasp push --force
-              (template) clasp push --force
+STEP 7 - Apply the master formatting
+------------------------------------
+  Open the master > Tracker Admin > Apply formatting (or Run > setupMaster).
 
-STEP 7 - Apply the sheet formatting
------------------------------------
-  Formatting lives in the repo so every instance looks the same.
-    TEMPLATE: Apps Script editor > Run > setupTemplate
-    MASTER:   reload the sheet > menu "Tracker Admin" > Apply formatting
+STEP 8 - Auth: register the master, set the allowlist
+-----------------------------------------------------
+  The service stays private. Only the master calls it, so only the master's one
+  audience is registered.
 
-STEP 8 - Auth: register ONLY the relay, set the allowlist
----------------------------------------------------------
-  The service stays private. Children and the master call the relay; the relay
-  is the single identity that calls the service, so only its audience is
-  registered (no per-child audiences). Access is enforced in the service by
-  verifying the forwarded caller token against the allowlist.
-
-  8a. run.invoker for the relay owner (the account that deployed the relay):
-      gcloud run services add-iam-policy-binding <SERVICE_NAME> --region <REGION> \
-        --member "user:<relay owner>" --role roles/run.invoker
-
-  8b. Register ONLY the relay's audience (remove any others). Get it by running
-      showAudience() in the RELAY script editor:
-
+  8a. Get the master's audience by running this once in the master script editor:
         function showAudience() {
           var t = ScriptApp.getIdentityToken();
-          var aud = JSON.parse(Utilities.newBlob(
-            Utilities.base64DecodeWebSafe(t.split('.')[1])).getDataAsString()).aud;
-          Logger.log(aud);
+          Logger.log(JSON.parse(Utilities.newBlob(
+            Utilities.base64DecodeWebSafe(t.split('.')[1])).getDataAsString()).aud);
         }
 
-      Then set it as the only custom audience:
+  8b. Register it as the only custom audience:
         gcloud run services update <SERVICE_NAME> --region <REGION> \
           --clear-custom-audiences
         gcloud run services update <SERVICE_NAME> --region <REGION> \
-          --add-custom-audiences=<relay audience>
+          --add-custom-audiences=<master audience>
 
-  8c. Set who may use the system in deploy/vars.sh (ALLOWED_EMAILS, optional
-      ALLOWED_DOMAIN, ADMIN_EMAILS) and redeploy. Non-admins may act only on
-      trackers they created (checked against the BigQuery registry).
+  8c. Grant run.invoker to each operator (a Google Group is easiest):
+        gcloud run services add-iam-policy-binding <SERVICE_NAME> --region <REGION> \
+          --member "user:<operator>" --role roles/run.invoker
+
+  8d. Who may use it is set in vars.sh (ALLOWED_EMAILS / ALLOWED_DOMAIN, and
+      ADMIN_EMAILS for users who may act on any tracker). Redeploy to apply.
 
 
 ============================================================
 DAILY USE
 ============================================================
-  1. Open the MASTER sheet > "Tracker Admin" > New tracker.
-     Enter client, sub-brand, title. A new tracker (a copy of the template) is
-     created, owned by you, and logged to BigQuery.
-  2. Open the new tracker. Fill the "setup" tab (field name + metric/dimension)
-     and paste your data into "data_source".
-  3. Tracker > Refresh. The service builds the "mapping" and themed "frontend"
-     tabs. "More actions" exposes the individual steps.
+  New tracker:
+    Master > Tracker Admin > New tracker. Enter client, sub-brand, title.
+    A clean sheet is created (you own it), the service account is shared, the
+    input tabs are scaffolded + formatted, and it is logged to BigQuery. The
+    URL is added as a link on the Admin tab.
+
+  Operate on a tracker (new or existing):
+    Fill the tracker's "setup" (field name + metric/dimension) and "data_source"
+    (row 1 headers, data below). Then Master > Tracker Admin > Operate on tracker,
+    paste the sheet URL, and pick an action (run all builds mapping + frontend).
+    For a sheet you bring yourself, you must be able to edit it (the app shares
+    the service account on it); the first operation registers it to you.
 
 
 ============================================================
 MAKING CHANGES
 ============================================================
-  - Generation logic / dashboard look (mapping, frontend, named ranges):
+  - Logic / dashboard look / input-tab formatting:
       edit service/, then  cd deploy && ./deploy.sh
-      Every existing tracker gets it on the next Refresh. No sheet edits.
-  - New menu action: add it to MENU_ACTIONS in service/main.py and redeploy.
-      It appears under a child's "More actions" with no child edit.
-  - Input-tab formatting / control-panel look:
-      edit apps_script/template/Setup.gs or apps_script/master/Setup.gs,
-      clasp push --force, then re-run setupTemplate / setupMaster.
-  - Shim behaviour (rare): edit apps_script/template/Code.gs, clasp push.
-      Note: existing children keep their copied shim; only new children get it.
+      Every tracker gets it on the next operation. No sheet edits, ever.
+  - New action: add it to MENU_ACTIONS in service/main.py and redeploy. It
+      appears in the master's Operate picker with no Apps Script change.
+  - Master menu / control panel: edit apps_script/master, clasp push --force,
+      re-run setupMaster for formatting.
 
 
 ============================================================
@@ -189,14 +152,13 @@ GOTCHAS
   - clasp create-script: use --parentId ONLY. Adding "--type sheets" creates a
     brand new spreadsheet instead of binding to your existing one.
   - clasp create-script overwrites the local appsscript.json with a bare default
-    (drops oauthScopes). Restore the committed appsscript.json before
-    clasp push --force, or the script loses its permissions.
-  - .clasp.json is per-instance and gitignored. The committed source is shared;
-    each instance generates its own .clasp.json via clasp create-script.
+    (drops oauthScopes). Restore the committed one before clasp push --force.
+  - .clasp.json and Config.gs are per-instance and gitignored. The committed
+    source is shared; each instance has its own.
   - Tab names are lowercase (setup, data_source, mapping, frontend); matching is
     case-insensitive, so "Setup" also works.
-  - A service-account-created file is owned by the service account. That is why
-    the MASTER (running as the user) creates children, not the service.
+  - Operating on a brought-in sheet requires the operator to be able to edit it
+    (so the app can share the service account); the first op claims ownership.
 
 
 ============================================================
@@ -211,12 +173,12 @@ THIS INSTANCE (current values)
   Service acct:   tracker-runner@palm-view-sparkling-water-co.iam.gserviceaccount.com
   BigQuery:       palm-view-sparkling-water-co.tracker_registry.trackers
   Master sheet:   1mo2VG-WF7vm9NTj05kPxM-aQPyY--nlJVSpxPq2hESo
-  Template sheet: 1YNnfKqHk3cJzTLoRTHypDg430AtoqUiUXVa9LtU8Sk4
+  Master audience: 417569000740-ai5n1ci3rq9latej0tl8vtm1scvgc9qb.apps.googleusercontent.com
+  Allowlist/admin: misterfela@gmail.com (dev)
 
-  Auth model: relay web app in front of the private service (one stable
-  audience). Service verifies the forwarded caller token, checks ALLOWED_EMAILS,
-  rate-limits, and enforces per-tracker ownership via the BigQuery created_by.
-  Dev allowlist + admin: misterfela@gmail.com.
+  Status: clean-sheets rework done in code (master + service). Remaining live
+  wiring: redeploy the service, swap the Cloud Run custom audience to the
+  master's only, push the master, and test New tracker + Operate.
 
-  Status: relay + service auth built; service redeploy + relay create/deploy +
-  audience swap to relay-only are the remaining live wiring (step 5 and 8).
+  Note: the earlier relay + per-child-shim version is preserved on the
+  'shim-model' branch (and the ../gsheet_tracker_maker-shim worktree).

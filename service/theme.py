@@ -300,3 +300,56 @@ def frontend_format(sheet_id, num_dimensions, num_metrics):
         )
 
     return requests
+
+
+def _freeze_header(sheet_id):
+    return {
+        "updateSheetProperties": {
+            "properties": {"sheetId": sheet_id, "gridProperties": {"frozenRowCount": 1}},
+            "fields": "gridProperties.frozenRowCount",
+        }
+    }
+
+
+def _note(sheet_id, row, col, text):
+    return {
+        "updateCells": {
+            "range": _grid(sheet_id, row, row + 1, col, col + 1),
+            "rows": [{"values": [{"note": text}]}],
+            "fields": "note",
+        }
+    }
+
+
+def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
+    """Format the two input tabs, mirroring the old Apps Script setupTemplate.
+
+    setup: a dark banner header on Field/Type, frozen first row, sensible column
+    widths, and hover notes. data_source: a frozen header and a hover note. Pure
+    function; the service applies these on scaffold so the look stays in code.
+    """
+    requests = []
+
+    if setup_sheet_id is not None:
+        requests.append(
+            _format(
+                setup_sheet_id, 0, 1, 0, 2,
+                {"backgroundColor": BANNER_BG, "textFormat": _text(10, BANNER_TEXT, bold=True)},
+                "userEnteredFormat(backgroundColor,textFormat)",
+            )
+        )
+        requests.append(_freeze_header(setup_sheet_id))
+        requests.append(_col_width(setup_sheet_id, 0, 1, 220))
+        requests.append(_col_width(setup_sheet_id, 1, 2, 120))
+        requests.append(
+            _note(setup_sheet_id, 0, 0, "Field must exactly match a header in data_source.")
+        )
+        requests.append(_note(setup_sheet_id, 0, 1, 'Type is "metric" or "dimension".'))
+
+    if data_source_sheet_id is not None:
+        requests.append(_freeze_header(data_source_sheet_id))
+        requests.append(
+            _note(data_source_sheet_id, 0, 0, "Paste raw data here. Row 1 = headers, row 2+ = data.")
+        )
+
+    return requests

@@ -13,12 +13,6 @@ export BQ_LOCATION="asia-south1"
 export BQ_DATASET="tracker_registry"
 export BQ_TABLE="trackers"
 
-# Control sheets. Set after you create the master and template sheets. The
-# service exposes the template id via get_config so the master Apps Script can
-# read it centrally.
-export MASTER_SHEET_ID=""
-export TEMPLATE_SHEET_ID=""
-
 # Access control. ALLOWED_EMAILS is the small list of who may use the system at
 # all (comma-separated). ALLOWED_DOMAIN optionally allows any address in a
 # Workspace domain. ADMIN_EMAILS may act on any tracker (others only on ones

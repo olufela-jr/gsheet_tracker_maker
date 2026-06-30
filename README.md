@@ -1,50 +1,42 @@
 # Google Sheets Performance Tracker Generator
 
-Generates a performance tracker inside a Google Sheet. The generation logic
-runs as a Python service on Cloud Run. The sheet keeps a custom menu, and a
-thin Apps Script shim calls the service. Nothing is generated inside Apps
-Script, and the service holds no state between requests.
+Generates and maintains performance trackers in Google Sheets. All logic runs
+as a Python service on Cloud Run. A single master sheet (the only Apps Script)
+creates trackers and operates on them. Trackers themselves carry no script.
 
 ## How it fits together
 
 ```
-Master control sheet  ── New tracker ─┐
-  (bound Apps Script)                 │ copy template (as user)
-                                      v
-Child tracker sheet  ── Refresh ──────┐   owned by the user, carries a
-  (generic shim)                      │   tiny dispatcher shim
-                                      v
-Relay web app  ── forwards (+ its own identity) ──> Cloud Run (PRIVATE)
-  (dumb pass-through)                                Python service
-                                                     all logic + auth here
-                                                     ──> Sheets + BigQuery
+Master control sheet (the ONLY Apps Script)
+  - New tracker          create a clean sheet, hand it to the service
+  - Operate on tracker   point the service at any sheet by URL
+        |  operator identity token (audience registered; operator has run.invoker)
+        v
+  Cloud Run service (PRIVATE) - verify caller, allowlist, rate-limit,
+        per-tracker ownership, audit ──> Sheets API + BigQuery
+Trackers: pure data, no bound script.
 ```
 
-- **Cloud Run is the only place logic and access control live.** Callers send a
-  caller identity token, a spreadsheet id, and an action; the service verifies
-  the caller, authorizes, and does the work. To advance behaviour you redeploy
-  the service, and every existing sheet picks it up untouched.
-- The service stays **private**. Children and the master call the **relay** (a
-  standalone Apps Script web app); the relay holds one stable identity and is
-  the only thing Cloud Run accepts, so unlimited children work without per-child
-  setup. The service verifies the forwarded caller token, checks an allowlist,
-  rate-limits, and enforces per-tracker ownership from the BigQuery registry.
-- The service runs as a service account that is an Editor on each child sheet.
+- **Cloud Run is the only place logic and access control live.** The master
+  sends the caller's identity token, a spreadsheet id, and an action; the
+  service verifies the caller, authorizes, and does the work. To advance
+  behaviour you redeploy the service; every tracker picks it up untouched.
+- The service is **private**. The master (one script, one audience) calls it
+  directly; the operator's token authenticates to Cloud Run (audience registered,
+  operator has `run.invoker`) and is verified by the service to identify the
+  caller. The service checks an allowlist, rate-limits, and enforces per-tracker
+  ownership from the BigQuery registry.
+- The service runs as a service account that is an Editor on each tracker.
 
 ### The pieces
 
-- **Relay** ([apps_script/relay/](apps_script/relay/)) is a dumb forwarder: it
-  attaches its identity and passes requests to the private service. No logic.
-- **Master control sheet** ([apps_script/master/](apps_script/master/)) is where
-  users mint trackers. "New tracker" copies the template (as the clicking user,
-  so the user owns the child), shares the service account, and calls `scaffold`
-  to set up the input tabs and log the tracker to BigQuery.
-- **Template sheet** ([apps_script/template/](apps_script/template/)) has empty
-  `setup`/`data_source` tabs and a bound generic dispatcher shim. Children are
-  copies of it.
-- **Child sheets** carry only the shim: `Refresh` (runs `run_all`) and
-  `More actions...` (a server-driven picker from `list_actions`). The shim holds
-  no logic, so children never need editing; new features ship server-side.
+- **Master control sheet** ([apps_script/master/](apps_script/master/)) is the
+  only script. **New tracker** creates a clean sheet (the operator owns it),
+  shares the service account, and calls `scaffold` to set up + format the input
+  tabs and log the tracker to BigQuery. **Operate on tracker** points the service
+  at any sheet by URL and runs an action.
+- **Trackers** are pure data: no bound script, so no per-sheet authorization and
+  nothing to keep in sync. They are freely copyable and shareable.
 
 ## The sheet layout
 
@@ -65,9 +57,11 @@ Two are inputs the user fills in (`setup`, `data_source`); two are generated
 
 ## Actions
 
-Two request shapes hit the same `POST /` endpoint.
+All requests `POST /` with the caller's identity token plus an action. Every
+request is authenticated (token verified, allowlist, rate limit), and sheet
+actions also require per-tracker ownership.
 
-Operate on an existing sheet (`{"spreadsheet_id": "...", "action": "..."}`):
+Operate on a sheet (`{"token": "...", "spreadsheet_id": "...", "action": "..."}`):
 
 - `validate` reads setup and data_source headers. Errors if there are no
   metrics, no dimensions, or any declared field is missing from the headers.
@@ -79,28 +73,21 @@ Operate on an existing sheet (`{"spreadsheet_id": "...", "action": "..."}`):
   dashboard: a banner, filter dropdowns, and the metrics as SUMIFS tiles.
 - `run_all` runs all of the above in order.
 
-Scaffold a freshly created sheet (`{"action": "scaffold", "spreadsheet_id":
-"...", "url": "...", "title": "...", "client": "...", "sub_brand": "...",
-"created_by": "..."}`):
+Scaffold a freshly created sheet (`{"token", "action": "scaffold",
+"spreadsheet_id", "url", "title", "client", "sub_brand"}`):
 
-- `scaffold` ensures the two input tabs (`setup`, `data_source`) exist on a
-  sheet Apps Script just created, seeding the setup header only when it creates
-  that tab. The generated tabs (mapping, frontend) are created later by the
-  generation steps. The default sheet is renamed rather than deleted, and any
-  other sheets the user already has are left alone. `spreadsheet_id`, `title`,
-  `client`, `sub_brand`, and `created_by` are required. If a BigQuery dataset
-  is configured, one audit row is streamed in (`event_id`, `created_at`,
-  `spreadsheet_id`, `url`, `title`, `client`, `sub_brand`, `created_by`,
-  `status`, `service_revision`); the response `detail` reports `logged` and any
+- `scaffold` ensures the two input tabs (`setup`, `data_source`) exist, seeds and
+  formats the setup header when it creates the tab, and leaves any tabs the user
+  already has alone. `created_by` is the verified caller (not client-supplied).
+  If BigQuery is configured, one audit row is streamed in (`event_id`,
+  `created_at`, `spreadsheet_id`, `url`, `title`, `client`, `sub_brand`,
+  `created_by`, `status`, `service_revision`); `detail` reports `logged` and any
   `logging_error`.
 
 No sheet needed:
 
-- `list_actions` returns the actions (name + label) the child shim offers in its
-  "More actions" menu. Adding an action here means no child sheet needs editing.
-- `get_config` returns the `master_sheet_id` and `template_sheet_id`, so the
-  master Apps Script can read the template id from the service rather than
-  hardcoding it.
+- `list_actions` returns the actions (name + label) the master's Operate picker
+  offers. Adding an action here surfaces it with no Apps Script change.
 
 ## A gotcha worth knowing: columns are numbers and letters
 
@@ -170,50 +157,39 @@ sub_brand, created_by, status, service_revision`), with `bigquery.dataEditor`
 granted to the service account on that dataset only. To deploy without logging,
 leave `BQ_DATASET` empty in `vars.sh`. See [deploy/README.md](deploy/README.md).
 
-### 5. Allow the sheet editors to invoke the service
+### 5. Set up the master control sheet
 
-`ScriptApp.getIdentityToken()` mints a token for the user who clicks the menu.
-That user's Google identity must have the `run.invoker` role on the service.
-Grant it to each user (or a group containing them):
+Create one blank sheet to be the master. With [clasp](https://github.com/google/clasp)
+(`clasp login` + Apps Script API on), bind and push the master:
 
 ```sh
-gcloud run services add-iam-policy-binding tracker-service \
-  --region REGION \
-  --member "user:someone@example.com" \
-  --role roles/run.invoker
+cd apps_script/master
+clasp create-script --parentId <MASTER_SHEET_ID> --rootDir .
+clasp push --force   # restore the committed appsscript.json first
 ```
 
-### 6. Create the template sheet
+Create `apps_script/master/Config.gs` (gitignored) with `var SERVICE_URL` (the
+Cloud Run URL) and `var SERVICE_ACCOUNT_EMAIL`, push again, then
+**Tracker Admin > Apply formatting**. Authorize the master once; that is the
+only authorization in the system. See [apps_script/README.md](apps_script/README.md).
 
-Make one spreadsheet to be the template. Open Extensions > Apps Script, add the
-files from [apps_script/template/](apps_script/template/) (`Code.gs` and the
-`appsscript.json` manifest), and set one Script Property:
+### 6. Register the master and the operators
 
-- `SERVICE_URL` - the Cloud Run URL from step 4
+The service stays private and accepts only the master's audience. Get the
+master's audience (run a one-liner in the master editor; see SETUP.txt), then:
 
-This property is copied with the template, so every child inherits it. Share
-the template so the people who will create trackers can copy it, and note its
-file id.
+```sh
+gcloud run services update tracker-service --region REGION --clear-custom-audiences
+gcloud run services update tracker-service --region REGION \
+  --add-custom-audiences=<master audience>
+gcloud run services add-iam-policy-binding tracker-service --region REGION \
+  --member "user:operator@example.com" --role roles/run.invoker
+```
 
-### 7. Create the master control sheet
-
-Make another spreadsheet to be the control panel. Open Extensions > Apps Script,
-add the files from [apps_script/master/](apps_script/master/) (`Menu.gs`,
-`Service.gs`, `appsscript.json`), and set Script Properties:
-
-- `SERVICE_URL` - the Cloud Run URL from step 4
-- `SERVICE_ACCOUNT_EMAIL` - the service account from step 1, shared as editor on
-  each child
-- `TEMPLATE_SHEET_ID` - the template file id from step 6 (optional if the
-  service has `TEMPLATE_SHEET_ID` set; the master reads it via `get_config`)
-
-Put the master and template ids into `deploy/vars.sh` (`MASTER_SHEET_ID`,
-`TEMPLATE_SHEET_ID`) and redeploy so `get_config` serves them.
-
-Reload the master. The **Tracker Admin** menu appears. **New tracker** prompts
-for client / sub-brand / title, copies the template (you own the copy), shares
-the service account, and registers it. In the child, fill `setup` +
-`data_source`, then **Tracker > Refresh** generates `mapping` and `frontend`.
+Set who may use it in `deploy/vars.sh` (`ALLOWED_EMAILS` / `ALLOWED_DOMAIN`,
+`ADMIN_EMAILS`) and redeploy. Then **Tracker Admin > New tracker** creates a
+clean tracker; fill its `setup` + `data_source` and **Operate on tracker** to
+build it. Full runbook in [SETUP.txt](SETUP.txt).
 
 ## Local development
 
@@ -251,12 +227,8 @@ service/             Cloud Run Python service
   .dockerignore
   tests/             pytest for the pure helpers
 apps_script/
-  relay/             standalone web app: dumb forwarder to the private service
-    Code.gs  appsscript.json
-  master/            control sheet: creates trackers from the template
+  master/            the only script: creates trackers and operates on them
     Menu.gs  Service.gs  Setup.gs  appsscript.json
-  template/          child shim children are copied from
-    Code.gs  Setup.gs  appsscript.json
 deploy/              parameterized deploy (bootstrap, deploy, test, vars)
   README.md          deploy instructions
 ```
