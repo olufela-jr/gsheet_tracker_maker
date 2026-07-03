@@ -470,7 +470,7 @@ def _existing_chart_ids(client, sheet_id):
     return []
 
 
-def build_view(client, cfg, tab, granularity):
+def build_view(client, cfg, tab, granularity, fields=None, headers=None, serials=None):
     """Build one themed view tab: a bucket x metric matrix.
 
     Layout (theme.VIEW_LAYOUT): a title banner, a filter bar with one dropdown
@@ -479,9 +479,15 @@ def build_view(client, cfg, tab, granularity):
     Raw metrics are SUMIFS over the bucket; calculated metrics substitute their
     [Field] tokens with bucket-level SUMIFS and wrap in IFERROR. The month view
     also gets a line chart of every metric over time.
+
+    fields / headers / serials may be passed in when building several views in
+    one run, so the setup tab and date column are read once, not per view. This
+    matters for the Sheets read-request quota.
     """
-    fields = read_setup(client, cfg)
-    headers = read_data_source_headers(client, cfg)
+    if fields is None:
+        fields = read_setup(client, cfg)
+    if headers is None:
+        headers = read_data_source_headers(client, cfg)
     metric_fields = [f for f in fields if f.type == "metric"]
     dimensions = dimensions_of(fields)
     date_name = date_field_of(fields)
@@ -495,7 +501,8 @@ def build_view(client, cfg, tab, granularity):
     metric_names = [m.name for m in metric_fields]
 
     # A tracker's date column is read as serials and bucketed for this view.
-    serials = _read_date_serials(client, cfg, date_name, headers)
+    if serials is None:
+        serials = _read_date_serials(client, cfg, date_name, headers)
     buckets = distinct_buckets(serials, granularity)
 
     # The dropdown cell for each dimension sits on the filter row; every SUMIFS
@@ -638,9 +645,19 @@ def build_view(client, cfg, tab, granularity):
 
 
 def build_views(client, cfg):
-    """Build all three view tabs (daily, weekly, monthly)."""
+    """Build all three view tabs (daily, weekly, monthly).
+
+    The setup fields, data_source headers, and date column are read once here
+    and passed to each view, so building three views is three reads, not nine.
+    """
+    fields = read_setup(client, cfg)
+    headers = read_data_source_headers(client, cfg)
+    date_name = date_field_of(fields)
+    serials = (
+        _read_date_serials(client, cfg, date_name, headers) if date_name else []
+    )
     return [
-        build_view(client, cfg, tab, granularity)
+        build_view(client, cfg, tab, granularity, fields, headers, serials)
         for tab, granularity in view_specs(cfg)
     ]
 

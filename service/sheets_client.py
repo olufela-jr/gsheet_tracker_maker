@@ -19,6 +19,12 @@ class SheetsClient:
         # spreadsheet_id is optional so one service object can be reused to
         # build a second client pointed at the registry spreadsheet.
         self.spreadsheet_id = spreadsheet_id
+        # Request-scoped cache of spreadsheet metadata. get_spreadsheet is called
+        # many times per run (existing_titles, get_sheet_id, get_named_ranges,
+        # chart ids); caching it collapses those into one read and keeps us under
+        # the Sheets "read requests per minute per user" quota. Any batch_update
+        # may change structure or named ranges, so it clears the cache.
+        self._meta_cache = None
         if service is None:
             credentials, _ = google.auth.default(scopes=SCOPES)
             service = build(
@@ -85,12 +91,18 @@ class SheetsClient:
         )
 
     def get_spreadsheet(self):
-        """Fetch spreadsheet metadata: sheet properties and named ranges."""
-        return (
-            self.service.spreadsheets()
-            .get(spreadsheetId=self.spreadsheet_id)
-            .execute()
-        )
+        """Fetch spreadsheet metadata: sheet properties and named ranges.
+
+        Cached for the life of this client (one request). batch_update clears
+        the cache, since adding tabs or named ranges changes this metadata.
+        """
+        if self._meta_cache is None:
+            self._meta_cache = (
+                self.service.spreadsheets()
+                .get(spreadsheetId=self.spreadsheet_id)
+                .execute()
+            )
+        return self._meta_cache
 
     def get_sheet_id(self, title):
         """Return the numeric sheetId for a tab title, or None if absent.
@@ -113,9 +125,12 @@ class SheetsClient:
     def batch_update(self, requests):
         """Run a list of batchUpdate requests (named ranges, data validation)."""
         body = {"requests": requests}
-        return (
+        result = (
             self.service.spreadsheets()
             .batchUpdate(spreadsheetId=self.spreadsheet_id, body=body)
             .execute()
         )
+        # Structure or named ranges may have changed; drop the metadata cache.
+        self._meta_cache = None
+        return result
 

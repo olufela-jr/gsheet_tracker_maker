@@ -23,8 +23,10 @@ class FakeClient:
         self.formula_writes = []
         self.batch_updates = []
         self.cleared = []
+        self.reads = []
 
     def read_range(self, a1_range, unformatted=False):
+        self.reads.append(a1_range)
         low = a1_range.lower()
         if "setup" in low:
             return self._setup
@@ -143,3 +145,26 @@ class TestBuildView:
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         drop = client._find_write(client.raw_writes, "A4")
         assert drop == [[DEFAULT_CONFIG.sentinel]]  # one dimension: Region
+
+
+class TestBuildViews:
+    def _client_all_tabs(self):
+        c = _client(DEFAULT_CONFIG.daily_tab)
+        c._tabs[DEFAULT_CONFIG.weekly_tab] = 4
+        c._tabs[DEFAULT_CONFIG.monthly_tab] = 5
+        return c
+
+    def test_builds_three_views(self):
+        client = self._client_all_tabs()
+        results = build_views(client, DEFAULT_CONFIG)
+        assert [r["granularity"] for r in results] == ["day", "week", "month"]
+
+    def test_reads_setup_and_date_column_once(self):
+        # The quota fix: three views must not re-read setup / headers / the date
+        # column per view. Expect one read each: setup, headers, date column.
+        client = self._client_all_tabs()
+        build_views(client, DEFAULT_CONFIG)
+        setup_reads = [r for r in client.reads if "setup" in r.lower()]
+        header_reads = [r for r in client.reads if "1:1" in r]
+        assert len(setup_reads) == 1
+        assert len(header_reads) == 1
