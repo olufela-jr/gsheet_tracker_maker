@@ -192,6 +192,15 @@ def handle():
             400,
         )
 
+    # Preflight: the sheet must have the input tabs. Turns a missing-tab raw API
+    # error into a clear, actionable message.
+    client = SheetsClient(spreadsheet_id)
+    try:
+        tracker.require_input_tabs(client, cfg)
+    except tracker.ValidationError as exc:
+        _audit(caller, action, spreadsheet_id, "denied", reason="not a tracker")
+        return _error("Not a tracker", {"errors": exc.errors}, 400)
+
     # Per-spreadsheet authorization. A caller may act on a tracker they created,
     # or one not yet in the registry (a brought-in sheet) which they then claim.
     # Admins may act on anything.
@@ -208,7 +217,6 @@ def handle():
             return _error("Not authorized for this tracker", code=403)
 
     _audit(caller, action, spreadsheet_id, "start")
-    client = SheetsClient(spreadsheet_id)
     return _run(
         lambda: SHEET_ACTIONS[action](client, cfg),
         "{} completed".format(action),

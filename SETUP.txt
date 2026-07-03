@@ -133,6 +133,13 @@ DAILY USE
     For a sheet you bring yourself, you must be able to edit it (the app shares
     the service account on it); the first operation registers it to you.
 
+  Set up an existing sheet (if it isn't a tracker yet):
+    If you Operate on a sheet that has no "setup"/"data_source" tabs, you get a
+    clear message ("This sheet has no 'data_source' tab..."). To prepare such a
+    sheet in place, use Master > Tracker Admin > Set up an existing sheet: paste
+    the URL and enter client / sub-brand / title. It creates + formats the input
+    tabs and registers the sheet; then fill them in and Operate.
+
 
 ============================================================
 MAKING CHANGES

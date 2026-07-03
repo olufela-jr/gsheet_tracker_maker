@@ -55,6 +55,63 @@ function createTracker() {
   }
 }
 
+/**
+ * Prepare an EXISTING sheet as a tracker: ensure + format the input tabs and
+ * register it. For a sheet that is not yet set up (e.g. missing data_source).
+ */
+function setUpExistingSheet() {
+  var ui = SpreadsheetApp.getUi();
+  var urlResponse = ui.prompt(
+    'Set up an existing sheet', 'Paste the sheet URL (or ID):',
+    ui.ButtonSet.OK_CANCEL);
+  if (urlResponse.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+  var id = parseSheetId_(urlResponse.getResponseText());
+  if (!id) {
+    ui.alert('Could not read a sheet ID from that.');
+    return;
+  }
+
+  var client = promptRequired_(ui, 'Set up (1/3)', 'Client:');
+  if (client === null) {
+    return;
+  }
+  var subBrand = promptRequired_(ui, 'Set up (2/3)', 'Sub-brand:');
+  if (subBrand === null) {
+    return;
+  }
+  var titleResponse = ui.prompt('Set up (3/3)', 'Title:', ui.ButtonSet.OK_CANCEL);
+  if (titleResponse.getSelectedButton() !== ui.Button.OK) {
+    return;
+  }
+  var title = titleResponse.getResponseText() || 'Performance Tracker';
+
+  var ss;
+  try {
+    ss = SpreadsheetApp.openById(id);
+    shareWithServiceAccount_(ss);
+  } catch (err) {
+    ui.alert('Could not open or share that sheet: ' + err);
+    return;
+  }
+
+  var parsed = postToService_({
+    action: 'scaffold',
+    spreadsheet_id: id,
+    url: ss.getUrl(),
+    title: title,
+    client: client,
+    sub_brand: subBrand
+  });
+  if (parsed && parsed.status === 'ok') {
+    SpreadsheetApp.getActiveSpreadsheet().toast(title + ' set up', 'Set up', 5);
+    logCreatedTracker_(title, client, subBrand, ss.getUrl());
+  } else {
+    ui.alert('Set up failed: ' + ((parsed && parsed.message) || 'unknown error'));
+  }
+}
+
 function operateOnTracker() {
   var ui = SpreadsheetApp.getUi();
   var response = ui.prompt(
@@ -108,7 +165,19 @@ function runActionOnTarget(action, spreadsheetId) {
   if (parsed && parsed.status === 'ok') {
     return action + ': ' + (parsed.message || 'done');
   }
-  return action + ' failed: ' + ((parsed && parsed.message) || 'unknown error');
+  return action + ' failed: ' + serviceErrorText_(parsed);
+}
+
+/** Message plus any specific service errors (e.g. why a sheet is not ready). */
+function serviceErrorText_(parsed) {
+  if (!parsed) {
+    return 'no response';
+  }
+  var message = parsed.message || 'error';
+  if (parsed.detail && parsed.detail.errors && parsed.detail.errors.length) {
+    message += ' - ' + parsed.detail.errors.join('; ');
+  }
+  return message;
 }
 
 function shareWithServiceAccount_(spreadsheet) {

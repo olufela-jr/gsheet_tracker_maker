@@ -1,7 +1,15 @@
 """Tests for scaffold and the BigQuery audit log, with fakes (no network)."""
 
+import pytest
+
 from config import DEFAULT_CONFIG
-from tracker import build_tracker_record, log_tracker, scaffold
+from tracker import (
+    ValidationError,
+    build_tracker_record,
+    log_tracker,
+    require_input_tabs,
+    scaffold,
+)
 
 
 class FakeSheet:
@@ -79,6 +87,29 @@ class TestScaffold:
         )
         scaffold(existing, DEFAULT_CONFIG)
         assert existing.writes == []
+
+
+class TestRequireInputTabs:
+    def test_passes_when_both_present(self):
+        client = FakeSheet(
+            {DEFAULT_CONFIG.setup_tab: 1, DEFAULT_CONFIG.data_source_tab: 2}
+        )
+        require_input_tabs(client, DEFAULT_CONFIG)  # no raise
+
+    def test_matches_case_insensitively(self):
+        client = FakeSheet({"SETUP": 1, "Data_Source": 2})
+        require_input_tabs(client, DEFAULT_CONFIG)  # no raise
+
+    def test_raises_naming_the_missing_tab(self):
+        client = FakeSheet({DEFAULT_CONFIG.setup_tab: 1})  # no data_source
+        with pytest.raises(ValidationError) as exc:
+            require_input_tabs(client, DEFAULT_CONFIG)
+        assert any("data_source" in e for e in exc.value.errors)
+
+    def test_raises_when_neither_present(self):
+        client = FakeSheet({"Sheet1": 0})
+        with pytest.raises(ValidationError):
+            require_input_tabs(client, DEFAULT_CONFIG)
 
 
 class TestBuildTrackerRecord:

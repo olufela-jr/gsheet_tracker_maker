@@ -96,6 +96,29 @@ def read_data_source_headers(client, cfg):
 # --- actions ---------------------------------------------------------------
 
 
+def require_input_tabs(client, cfg):
+    """Raise a clear error if the input tabs are missing.
+
+    A sheet pointed at by URL may not be a prepared tracker. Without this, a
+    missing setup/data_source tab surfaces as a raw "Unable to parse range"
+    Sheets API error. Here it becomes actionable guidance instead.
+    """
+    titles = existing_titles(client)
+    missing = [
+        tab for tab in (cfg.setup_tab, cfg.data_source_tab)
+        if tab.lower() not in titles
+    ]
+    if missing:
+        names = " and ".join("'{}'".format(m) for m in missing)
+        raise ValidationError(
+            [
+                "This sheet has no {} tab, so it is not set up as a tracker. "
+                "Use 'Set up an existing sheet' (or New tracker) to prepare it."
+                .format(names)
+            ]
+        )
+
+
 def validate(client, cfg):
     """Check that Setup describes a usable tracker against Data Source.
 
@@ -113,12 +136,15 @@ def validate(client, cfg):
     if not dimensions:
         errors.append("No dimensions declared in Setup.")
 
-    header_set = set(headers)
-    for name, _ in fields:
-        if name not in header_set:
-            errors.append(
-                "Setup field '{}' is not a Data Source header.".format(name)
-            )
+    if not headers:
+        errors.append("Data Source has no header row.")
+    else:
+        header_set = set(headers)
+        for name, _ in fields:
+            if name not in header_set:
+                errors.append(
+                    "Setup field '{}' is not a Data Source header.".format(name)
+                )
 
     if errors:
         raise ValidationError(errors)

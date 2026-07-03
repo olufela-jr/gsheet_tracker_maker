@@ -10,6 +10,7 @@ function onOpen() {
     .createMenu('Tracker Admin')
     .addItem('New tracker', 'createTracker')
     .addItem('Operate on tracker', 'operateOnTracker')
+    .addItem('Set up an existing sheet', 'setUpExistingSheet')
     .addSeparator()
     .addItem('Apply formatting', 'setupMaster')
     .addToUi();
