@@ -13,7 +13,7 @@ POST / with a JSON body, get back {"status": "ok|error", "message", "detail"}.
   {"token": "<caller id token>", "action": "...", "spreadsheet_id": "...", ...}
 
 Actions: run_all, validate, generate_mapping, create_named_ranges,
-build_frontend (need a spreadsheet_id and tracker ownership); scaffold (creates
+build_views (need a spreadsheet_id and tracker ownership); scaffold (creates
 + formats input tabs, logs a BigQuery row); list_actions (no sheet).
 
 The service is stateless. Each request builds a fresh client, runs one action,
@@ -41,7 +41,7 @@ SHEET_ACTIONS = {
     "validate": tracker.validate,
     "generate_mapping": tracker.generate_mapping,
     "create_named_ranges": tracker.create_named_ranges,
-    "build_frontend": tracker.build_frontend,
+    "build_views": tracker.build_views,
     "run_all": tracker.run_all,
 }
 
@@ -52,7 +52,7 @@ MENU_ACTIONS = [
     {"action": "validate", "label": "Validate setup"},
     {"action": "generate_mapping", "label": "Generate mapping"},
     {"action": "create_named_ranges", "label": "Create named ranges"},
-    {"action": "build_frontend", "label": "Build frontend"},
+    {"action": "build_views", "label": "Build views"},
 ]
 
 

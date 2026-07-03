@@ -30,10 +30,19 @@ class SheetsClient:
     def _values(self):
         return self.service.spreadsheets().values()
 
-    def read_range(self, a1_range):
-        """Read a range and return its rows. Empty range returns []."""
+    def read_range(self, a1_range, unformatted=False):
+        """Read a range and return its rows. Empty range returns [].
+
+        unformatted=True asks for UNFORMATTED_VALUE, so dates come back as
+        serial numbers (needed for bucketing) rather than formatted strings.
+        """
+        render = "UNFORMATTED_VALUE" if unformatted else "FORMATTED_VALUE"
         response = (
-            self._values.get(spreadsheetId=self.spreadsheet_id, range=a1_range)
+            self._values.get(
+                spreadsheetId=self.spreadsheet_id,
+                range=a1_range,
+                valueRenderOption=render,
+            )
             .execute()
         )
         return response.get("values", [])

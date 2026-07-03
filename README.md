@@ -40,20 +40,26 @@ Trackers: pure data, no bound script.
 
 ## The sheet layout
 
-Four tabs. Tab names are constants in [service/config.py](service/config.py).
-Two are inputs the user fills in (`setup`, `data_source`); two are generated
-(`mapping`, `frontend`). Tab matching is case-insensitive, so `setup` and
-`Setup` are the same tab.
+Tab names are constants in [service/config.py](service/config.py). Two are
+inputs the user fills in (`setup`, `data_source`); the rest are generated
+(`mapping`, `daily`, `weekly`, `monthly`). Tab matching is case-insensitive, so
+`setup` and `Setup` are the same tab.
 
-- **setup** (input) declares the schema. Column A is the field name (must match
-  a data_source header exactly), column B is the type (`metric` or
-  `dimension`). Row 1 is a header and is skipped.
+- **setup** (input) declares the schema. Column A is the field name, column B is
+  the type (`metric`, `dimension`, or `date` - tag exactly one field `date`),
+  column C is an optional `[Field]`-token formula for a calculated metric (for
+  example `[Spend]/[Clicks]`), and column D is a number-format hint
+  (`currency`, `percent`, `number`). Raw fields must match a data_source header
+  exactly; calculated fields need not. Row 1 is a header and is skipped.
 - **data_source** (input) is the raw data. Row 1 is headers, row 2+ is data.
 - **mapping** (generated) has one column per dimension: row 1 the dimension
   name, row 2 the `**` sentinel (meaning "All"), row 3+ the distinct values.
-- **frontend** (generated) is the themed dashboard. Row 1 dimension labels,
-  row 2 dropdowns (default `**`), row 4 the metric header, row 5+ the metric
-  tiles with SUMIFS values.
+- **daily / weekly / monthly** (generated) are the themed views. Each is a
+  bucket x metric matrix: a filter bar (one dropdown per dimension, default
+  `**`), a KPI strip of dimension-filtered grand totals, then one row per date
+  bucket (day / week / month) and one column per metric. Calculated-metric
+  columns are tinted periwinkle; the monthly view also carries a line chart of
+  every metric over time.
 
 ## Actions
 
@@ -64,13 +70,15 @@ actions also require per-tracker ownership.
 Operate on a sheet (`{"token": "...", "spreadsheet_id": "...", "action": "..."}`):
 
 - `validate` reads setup and data_source headers. Errors if there are no
-  metrics, no dimensions, or any declared field is missing from the headers.
+  metrics, no single `date` field, any raw field is missing from the headers,
+  or a calculated field references an unknown or calculated field.
 - `generate_mapping` ensures the mapping tab exists, then writes one column per
   dimension with its distinct sorted values (mapping is cleared first).
 - `create_named_ranges` creates one named range per data_source column,
   pointing at `'data_source'!<col>2:<col>`. Existing names are skipped.
-- `build_frontend` ensures the frontend tab exists, then rebuilds the themed
-  dashboard: a banner, filter dropdowns, and the metrics as SUMIFS tiles.
+- `build_views` rebuilds the three view tabs (daily, weekly, monthly): a
+  banner, filter dropdowns, a KPI strip, and a per-bucket SUMIFS matrix, plus a
+  line chart on the monthly tab.
 - `run_all` runs all of the above in order.
 
 Scaffold a freshly created sheet (`{"token", "action": "scaffold",
@@ -220,7 +228,7 @@ service/             Cloud Run Python service
   sheets_client.py   Sheets API wrapper over ADC
   bq_client.py       BigQuery wrapper (audit log + per-tracker created_by)
   tracker.py         domain logic plus the pure helpers
-  theme.py           Frontend palette, layout, and formatting requests
+  theme.py           View palette, layout, and formatting requests
   config.py          tab names, sentinel, sanitise + helpers, ids, allowlist
   requirements.txt
   Dockerfile

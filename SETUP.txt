@@ -127,9 +127,10 @@ DAILY USE
     URL is added as a link on the Admin tab.
 
   Operate on a tracker (new or existing):
-    Fill the tracker's "setup" (field name + metric/dimension) and "data_source"
-    (row 1 headers, data below). Then Master > Tracker Admin > Operate on tracker,
-    paste the sheet URL, and pick an action (run all builds mapping + frontend).
+    Fill the tracker's "setup" (field name; type metric/dimension/date; optional
+    [Field] formula; number-format hint) and "data_source" (row 1 headers, data
+    below). Then Master > Tracker Admin > Operate on tracker, paste the sheet URL,
+    and pick an action (run all builds mapping + the daily/weekly/monthly views).
     For a sheet you bring yourself, you must be able to edit it (the app shares
     the service account on it); the first operation registers it to you.
 
@@ -162,8 +163,8 @@ GOTCHAS
     (drops oauthScopes). Restore the committed one before clasp push --force.
   - .clasp.json and Config.gs are per-instance and gitignored. The committed
     source is shared; each instance has its own.
-  - Tab names are lowercase (setup, data_source, mapping, frontend); matching is
-    case-insensitive, so "Setup" also works.
+  - Tab names are lowercase (setup, data_source, mapping, daily, weekly,
+    monthly); matching is case-insensitive, so "Setup" also works.
   - Operating on a brought-in sheet requires the operator to be able to edit it
     (so the app can share the service account); the first op claims ownership.
 

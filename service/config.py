@@ -10,13 +10,15 @@ import os
 import re
 from dataclasses import dataclass
 
-# Tab names. setup and data_source are inputs the user fills in; mapping and
-# frontend are generated. Tab matching is case-insensitive (see tracker.py), so
-# "Setup" and "setup" are treated as the same tab.
+# Tab names. setup and data_source are inputs the user fills in; mapping and the
+# three view tabs are generated. Tab matching is case-insensitive (tracker.py),
+# so "Setup" and "setup" are treated as the same tab.
 SETUP_TAB = "setup"
 DATA_SOURCE_TAB = "data_source"
 MAPPING_TAB = "mapping"
-FRONTEND_TAB = "frontend"
+DAILY_TAB = "daily"
+WEEKLY_TAB = "weekly"
+MONTHLY_TAB = "monthly"
 
 # The sentinel written into Mapping row 2 and used as the Frontend dropdown
 # default. It means "All" (no filter on this dimension).
@@ -48,7 +50,9 @@ class Config:
     setup_tab: str = SETUP_TAB
     data_source_tab: str = DATA_SOURCE_TAB
     mapping_tab: str = MAPPING_TAB
-    frontend_tab: str = FRONTEND_TAB
+    daily_tab: str = DAILY_TAB
+    weekly_tab: str = WEEKLY_TAB
+    monthly_tab: str = MONTHLY_TAB
     sentinel: str = SENTINEL
     frontend_title: str = FRONTEND_TITLE
     bigquery_project: str = BIGQUERY_PROJECT

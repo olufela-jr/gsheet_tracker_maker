@@ -413,105 +413,175 @@ def create_named_ranges(client, cfg):
     return {"created": created, "skipped": skipped}
 
 
-def build_frontend(client, cfg):
-    """Build the Frontend tab: a themed dashboard.
+def view_specs(cfg):
+    """(tab, granularity) for the three view tabs, in display order."""
+    return [
+        (cfg.daily_tab, "day"),
+        (cfg.weekly_tab, "week"),
+        (cfg.monthly_tab, "month"),
+    ]
 
-    Layout (see theme.LAYOUT): a title banner on row 1, a filter bar with one
-    dropdown per dimension, then the metrics laid out horizontally as accented
-    tiles, each a caption above a SUMIFS value. The dropdown cell of each
-    dimension is the cell referenced by every metric's SUMIFS, so they always
-    point at the same place.
+
+def _read_date_serials(client, cfg, date_name, headers):
+    """Read the date column of Data Source as raw serial numbers.
+
+    Reading unformatted means dates come back as serials we can bucket rather
+    than as locale-formatted strings.
+    """
+    if date_name not in headers:
+        return []
+    col = column_to_letter(headers.index(date_name) + 1)
+    rows = client.read_range(
+        a1(cfg.data_source_tab, "{c}2:{c}".format(c=col)), unformatted=True
+    )
+    return [row[0] for row in rows if row]
+
+
+def _grand_total_formula(metric, dim_specs, sentinel):
+    """The dimension-filtered grand total for a metric (no date bucket)."""
+    if metric.formula:
+        return build_calc_formula(
+            metric.formula,
+            lambda n: sumifs_expr(sanitise_name(n), dim_specs, sentinel),
+        )
+    return build_sumifs_formula(sanitise_name(metric.name), dim_specs, sentinel)
+
+
+def _bucket_formula(metric, date_range, cell, granularity, dim_specs, sentinel):
+    """The per-bucket value for a metric, filtered by the dropdowns."""
+    if metric.formula:
+        return build_calc_formula(
+            metric.formula,
+            lambda n: bucket_sumifs_expr(
+                sanitise_name(n), date_range, cell, granularity, dim_specs, sentinel
+            ),
+        )
+    return "=" + bucket_sumifs_expr(
+        sanitise_name(metric.name), date_range, cell, granularity, dim_specs, sentinel
+    )
+
+
+def _existing_chart_ids(client, sheet_id):
+    """Chart ids embedded on a given sheet, so re-runs can delete them first."""
+    meta = client.get_spreadsheet()
+    for s in meta.get("sheets", []):
+        if s.get("properties", {}).get("sheetId") == sheet_id:
+            return [c["chartId"] for c in s.get("charts", []) if "chartId" in c]
+    return []
+
+
+def build_view(client, cfg, tab, granularity):
+    """Build one themed view tab: a bucket x metric matrix.
+
+    Layout (theme.VIEW_LAYOUT): a title banner, a filter bar with one dropdown
+    per dimension, a KPI strip of dimension-filtered grand totals, then a matrix
+    with one row per date bucket (day / week / month) and one column per metric.
+    Raw metrics are SUMIFS over the bucket; calculated metrics substitute their
+    [Field] tokens with bucket-level SUMIFS and wrap in IFERROR. The month view
+    also gets a line chart of every metric over time.
     """
     fields = read_setup(client, cfg)
-    metrics = metrics_of(fields)
+    headers = read_data_source_headers(client, cfg)
+    metric_fields = [f for f in fields if f.type == "metric"]
     dimensions = dimensions_of(fields)
-    lay = theme.LAYOUT
+    date_name = date_field_of(fields)
+    if date_name is None:
+        raise ValidationError(
+            ["No single date field is declared, so no view can be built."]
+        )
 
-    # frontend is a generated tab; create it if it does not exist yet.
-    ensure_tab(client, cfg.frontend_tab)
-    front_sheet_id = client.get_sheet_id(cfg.frontend_tab)
+    lay = theme.VIEW_LAYOUT
+    date_range = sanitise_name(date_name)
+    metric_names = [m.name for m in metric_fields]
 
-    # Clear existing values. This does not touch data validation rules or
-    # formatting, so we reset those explicitly in the batch update below.
-    client.clear_range(cfg.frontend_tab)
+    # A tracker's date column is read as serials and bucketed for this view.
+    serials = _read_date_serials(client, cfg, date_name, headers)
+    buckets = distinct_buckets(serials, granularity)
 
-    # Dimension named ranges and the dropdown cell for each dimension. The
-    # dropdown sits on the filter row, one column per dimension.
+    # The dropdown cell for each dimension sits on the filter row; every SUMIFS
+    # references that exact cell, so filtering one place drives the whole tab.
     dim_specs = []
     for idx, dim in enumerate(dimensions):
-        dim_range = sanitise_name(dim)
         dropdown_cell = column_to_letter(idx + 1) + str(lay.filter_dropdown_row)
-        dim_specs.append((dim_range, dropdown_cell))
+        dim_specs.append((sanitise_name(dim), dropdown_cell))
 
-    # Plain values go in as RAW; formulas go in as USER_ENTERED so the Sheets
-    # API evaluates them instead of storing the text.
+    # view tabs are generated; create then clear so a re-run starts fresh.
+    ensure_tab(client, tab)
+    sheet_id = client.get_sheet_id(tab)
+    client.clear_range(tab)
+
+    title = "{} - {}".format(cfg.frontend_title, granularity.capitalize())
+
+    # Plain values go in as RAW; formulas as USER_ENTERED so Sheets evaluates
+    # them. Bucket dates are written as serials with a date number format.
     raw_data = [
+        {"range": a1(tab, "A{}".format(lay.title_row)), "values": [[title]]},
         {
-            "range": a1(cfg.frontend_tab, "A{}".format(lay.title_row)),
-            "majorDimension": "ROWS",
-            "values": [[cfg.frontend_title]],
-        }
+            "range": a1(tab, "A{}".format(lay.kpi_label_row)),
+            "values": [["Totals"] + metric_names],
+        },
+        {
+            "range": a1(tab, "A{}".format(lay.matrix_header_row)),
+            "values": [["Period"] + metric_names],
+        },
     ]
-    formula_data = []
-
     if dimensions:
         raw_data.append(
-            {
-                "range": a1(cfg.frontend_tab, "A{}".format(lay.filter_label_row)),
-                "majorDimension": "ROWS",
-                "values": [list(dimensions)],
-            }
+            {"range": a1(tab, "A{}".format(lay.filter_label_row)), "values": [list(dimensions)]}
         )
         raw_data.append(
             {
-                "range": a1(cfg.frontend_tab, "A{}".format(lay.filter_dropdown_row)),
-                "majorDimension": "ROWS",
+                "range": a1(tab, "A{}".format(lay.filter_dropdown_row)),
                 "values": [[cfg.sentinel for _ in dimensions]],
             }
         )
-
-    # Metrics horizontally: tile i sits in column theme.metric_column(i), with
-    # a grey gap column between tiles. We write one row of labels and one row
-    # of formulas, padding the gap columns with blanks.
-    if metrics:
-        label_row = []
-        value_row = []
-        for i, metric in enumerate(metrics):
-            if i > 0:
-                label_row.append("")
-                value_row.append("")
-            label_row.append(metric)
-            value_row.append(
-                build_sumifs_formula(sanitise_name(metric), dim_specs, cfg.sentinel)
-            )
+    if buckets:
         raw_data.append(
             {
-                "range": a1(cfg.frontend_tab, "A{}".format(lay.metric_label_row)),
-                "majorDimension": "ROWS",
-                "values": [label_row],
+                "range": a1(tab, "A{}".format(lay.matrix_first_data_row)),
+                "values": [[b] for b in buckets],
             }
         )
+
+    formula_data = []
+    if metric_names:
         formula_data.append(
             {
-                "range": a1(cfg.frontend_tab, "A{}".format(lay.metric_value_row)),
-                "majorDimension": "ROWS",
-                "values": [value_row],
+                "range": a1(tab, "B{}".format(lay.kpi_value_row)),
+                "values": [[_grand_total_formula(m, dim_specs, cfg.sentinel) for m in metric_fields]],
             }
+        )
+    if buckets and metric_names:
+        matrix = []
+        for i in range(len(buckets)):
+            cell = "A{}".format(lay.matrix_first_data_row + i)
+            matrix.append(
+                [
+                    _bucket_formula(m, date_range, cell, granularity, dim_specs, cfg.sentinel)
+                    for m in metric_fields
+                ]
+            )
+        formula_data.append(
+            {"range": a1(tab, "B{}".format(lay.matrix_first_data_row)), "values": matrix}
         )
 
     client.batch_write_values(raw_data, value_input_option="RAW")
     if formula_data:
         client.batch_write_values(formula_data, value_input_option="USER_ENTERED")
 
-    # One batch update for theming plus data validation. Theming first, then
-    # the dropdown rules. Start by clearing any old rules across the filter row.
-    requests = theme.frontend_format(front_sheet_id, len(dimensions), len(metrics))
+    # Theming, then dropdown data validation, then (month only) a fresh chart.
+    metrics_meta = [(bool(m.formula), number_format_pattern(m.fmt)) for m in metric_fields]
+    date_pattern = MONTH_FORMAT if granularity == "month" else DATE_FORMAT
+    requests = theme.view_format_requests(
+        sheet_id, len(dimensions), metrics_meta, len(buckets), date_pattern
+    )
+
     drop_row_index = lay.filter_dropdown_row - 1
     requests.append(
         {
             "setDataValidation": {
                 "range": {
-                    "sheetId": front_sheet_id,
+                    "sheetId": sheet_id,
                     "startRowIndex": drop_row_index,
                     "endRowIndex": drop_row_index + 1,
                     "startColumnIndex": 0,
@@ -527,7 +597,7 @@ def build_frontend(client, cfg):
             {
                 "setDataValidation": {
                     "range": {
-                        "sheetId": front_sheet_id,
+                        "sheetId": sheet_id,
                         "startRowIndex": drop_row_index,
                         "endRowIndex": drop_row_index + 1,
                         "startColumnIndex": idx,
@@ -545,9 +615,34 @@ def build_frontend(client, cfg):
             }
         )
 
+    if granularity == "month":
+        for chart_id in _existing_chart_ids(client, sheet_id):
+            requests.append({"deleteEmbeddedObject": {"objectId": chart_id}})
+
     client.batch_update(requests)
 
-    return {"metrics": metrics, "dimensions": dimensions}
+    # The chart is added in its own batch: it references the matrix that the
+    # prior writes created, and delete-then-add in one batch can race.
+    if granularity == "month" and buckets and metric_names:
+        client.batch_update(
+            [theme.line_chart_request(sheet_id, len(metric_names), len(buckets))]
+        )
+
+    return {
+        "tab": tab,
+        "granularity": granularity,
+        "metrics": metric_names,
+        "dimensions": dimensions,
+        "buckets": len(buckets),
+    }
+
+
+def build_views(client, cfg):
+    """Build all three view tabs (daily, weekly, monthly)."""
+    return [
+        build_view(client, cfg, tab, granularity)
+        for tab, granularity in view_specs(cfg)
+    ]
 
 
 def existing_titles(client):
@@ -583,7 +678,17 @@ def scaffold(client, cfg):
     existing setup tab is never reseeded.
     """
     wanted = [cfg.setup_tab, cfg.data_source_tab]
-    known = {t.lower() for t in (cfg.setup_tab, cfg.data_source_tab, cfg.mapping_tab, cfg.frontend_tab)}
+    known = {
+        t.lower()
+        for t in (
+            cfg.setup_tab,
+            cfg.data_source_tab,
+            cfg.mapping_tab,
+            cfg.daily_tab,
+            cfg.weekly_tab,
+            cfg.monthly_tab,
+        )
+    }
     existing = existing_titles(client)
 
     missing = [t for t in wanted if t.lower() not in existing]
@@ -697,17 +802,17 @@ def log_tracker(bq_client, cfg, record):
 
 
 def run_all(client, cfg):
-    """Run validate, generate_mapping, create_named_ranges, build_frontend.
+    """Run validate, generate_mapping, create_named_ranges, build_views.
 
-    Named ranges are created before the frontend so the SUMIFS references
-    resolve. validate runs first and raises before any writes happen.
+    Named ranges are created before the views so the SUMIFS references resolve.
+    validate runs first and raises before any writes happen.
     """
     validate(client, cfg)
     mapping = generate_mapping(client, cfg)
     named_ranges = create_named_ranges(client, cfg)
-    frontend = build_frontend(client, cfg)
+    views = build_views(client, cfg)
     return {
         "mapping": mapping,
         "named_ranges": named_ranges,
-        "frontend": frontend,
+        "views": views,
     }
