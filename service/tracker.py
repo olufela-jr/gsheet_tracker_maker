@@ -6,8 +6,33 @@ do their work against the live sheet. The genuinely pure helpers
 their own.
 """
 
+import re
+from collections import namedtuple
+from datetime import date, timedelta
+
 import theme
 from config import column_to_letter, sanitise_name, a1
+
+# One declared field in the Setup tab.
+#   name:    field name (Setup column A)
+#   type:    "metric" | "dimension" | "date" (column B)
+#   formula: bracket-token expression for a calculated metric, or "" for raw (C)
+#   fmt:     "currency" | "percent" | "number" | "" number format hint (D)
+Field = namedtuple("Field", ["name", "type", "formula", "fmt"])
+
+# Matches [Field Name] tokens in a calculated field's formula (brackets so
+# multi-word names work).
+_TOKEN_RE = re.compile(r"\[([^\]]+)\]")
+
+
+def formula_tokens(formula):
+    """Return the distinct [Field] names referenced in a formula, in order."""
+    seen = []
+    for match in _TOKEN_RE.findall(formula or ""):
+        name = match.strip()
+        if name and name not in seen:
+            seen.append(name)
+    return seen
 
 
 class ValidationError(Exception):
@@ -41,50 +66,170 @@ def distinct_values(values):
     return sorted(result)
 
 
-def build_sumifs_formula(metric_range, dimensions, sentinel="**"):
-    """Build the SUMIFS (or SUM) formula string for one metric.
+def sumifs_expr(metric_range, dimensions, sentinel="**"):
+    """The SUMIFS/SUM expression (no leading '=') filtered by the dropdowns.
 
-    metric_range is the sanitised named range for the metric column.
-    dimensions is a list of (dimension_named_range, dropdown_cell) tuples in
-    dimension order. With zero dimensions there is nothing to filter on, so
-    the result is a plain SUM. For the "All" case we compare against "<>"
-    (not equal to empty) rather than the "*" wildcard, because "*" only
-    matches text and would drop numeric and date rows.
+    For the "All" case we compare against "<>" (not equal to empty) rather than
+    the "*" wildcard, because "*" only matches text and would drop numeric and
+    date rows.
     """
     if not dimensions:
-        return "=SUM({})".format(metric_range)
+        return "SUM({})".format(metric_range)
     clauses = []
     for dim_range, cell in dimensions:
         clauses.append(
             '{r}, IF({c}="{s}","<>",{c})'.format(r=dim_range, c=cell, s=sentinel)
         )
-    return "=SUMIFS({m}, {clauses})".format(m=metric_range, clauses=", ".join(clauses))
+    return "SUMIFS({m}, {clauses})".format(m=metric_range, clauses=", ".join(clauses))
+
+
+def build_sumifs_formula(metric_range, dimensions, sentinel="**"):
+    """A standalone SUMIFS/SUM cell formula (grand total, no date bucket)."""
+    return "=" + sumifs_expr(metric_range, dimensions, sentinel)
+
+
+# --- date bucketing + per-bucket formulas ---------------------------------
+
+_SERIAL_BASE = date(1899, 12, 30)  # the Sheets / Excel date epoch
+
+
+def serial_to_date(serial):
+    return _SERIAL_BASE + timedelta(days=int(serial))
+
+
+def date_to_serial(d):
+    return (d - _SERIAL_BASE).days
+
+
+def bucket_serial(serial, granularity):
+    """Map a date serial to its bucket-start serial for day / week / month.
+
+    Week starts on Monday; month on the first. Time components are dropped.
+    """
+    s = int(float(serial))
+    if granularity == "day":
+        return s
+    d = serial_to_date(s)
+    if granularity == "week":
+        return date_to_serial(d - timedelta(days=d.weekday()))
+    if granularity == "month":
+        return date_to_serial(date(d.year, d.month, 1))
+    raise ValueError("unknown granularity: {}".format(granularity))
+
+
+def distinct_buckets(serials, granularity):
+    """Sorted, distinct bucket-start serials from raw date serials.
+
+    Non-numeric / blank cells are skipped.
+    """
+    seen = set()
+    out = []
+    for value in serials:
+        try:
+            bucket = bucket_serial(value, granularity)
+        except (ValueError, TypeError):
+            continue
+        if bucket not in seen:
+            seen.add(bucket)
+            out.append(bucket)
+    return sorted(out)
+
+
+def _date_criteria(date_range, cell, granularity):
+    """SUMIFS criteria pair(s) selecting the bucket whose start is in `cell`.
+
+    Upper bounds are exclusive ("<") so date-time values on the last day are
+    still included.
+    """
+    if granularity == "day":
+        upper = "({c}+1)".format(c=cell)
+    elif granularity == "week":
+        upper = "({c}+7)".format(c=cell)
+    elif granularity == "month":
+        upper = "(EOMONTH({c},0)+1)".format(c=cell)
+    else:
+        raise ValueError("unknown granularity: {}".format(granularity))
+    return [date_range, '">="&{c}'.format(c=cell), date_range, '"<"&{u}'.format(u=upper)]
+
+
+def bucket_sumifs_expr(metric_range, date_range, bucket_cell, granularity, dims, sentinel="**"):
+    """SUMIFS expression for a raw metric within one bucket, dropdown-filtered.
+
+    dims is a list of (dimension_named_range, dropdown_cell) tuples.
+    """
+    parts = [metric_range] + _date_criteria(date_range, bucket_cell, granularity)
+    for dim_range, cell in dims:
+        parts.append(dim_range)
+        parts.append('IF({c}="{s}","<>",{c})'.format(c=cell, s=sentinel))
+    return "SUMIFS({})".format(", ".join(parts))
+
+
+def build_calc_formula(formula, resolve):
+    """Substitute [Field] tokens with expressions and wrap in IFERROR.
+
+    resolve(name) returns the SUMIFS expression for a raw field in the current
+    context (a bucket or a grand total). IFERROR turns divide-by-zero into a
+    blank rather than #DIV/0!.
+    """
+    substituted = _TOKEN_RE.sub(lambda m: resolve(m.group(1).strip()), formula)
+    return '=IFERROR({}, "")'.format(substituted)
+
+
+# --- number formats --------------------------------------------------------
+
+_NUMBER_FORMATS = {"currency": "$#,##0", "percent": "0%", "number": "#,##0"}
+DATE_FORMAT = "d-mmm-yyyy"
+MONTH_FORMAT = "mmm-yyyy"
+
+
+def number_format_pattern(fmt):
+    """Sheets number pattern for a format hint; defaults to a plain count."""
+    return _NUMBER_FORMATS.get((fmt or "").lower(), "#,##0")
 
 
 # --- reading setup and data source ----------------------------------------
 
 
+def _cell(row, i):
+    return (row[i].strip() if len(row) > i and row[i] else "")
+
+
 def read_setup(client, cfg):
-    """Read Setup rows below the header into a list of (name, type) tuples."""
-    rows = client.read_range(a1(cfg.setup_tab, "A2:B"))
+    """Read Setup rows below the header into a list of Field tuples.
+
+    Columns: A name, B type, C formula (calculated metrics), D format hint.
+    """
+    rows = client.read_range(a1(cfg.setup_tab, "A2:D"))
     fields = []
     for row in rows:
         if not row:
             continue
-        name = (row[0] or "").strip()
+        name = _cell(row, 0)
         if not name:
             continue
-        field_type = (row[1].strip().lower() if len(row) > 1 and row[1] else "")
-        fields.append((name, field_type))
+        fields.append(
+            Field(
+                name=name,
+                type=_cell(row, 1).lower(),
+                formula=_cell(row, 2),
+                fmt=_cell(row, 3).lower(),
+            )
+        )
     return fields
 
 
 def metrics_of(fields):
-    return [name for name, field_type in fields if field_type == "metric"]
+    return [f.name for f in fields if f.type == "metric"]
 
 
 def dimensions_of(fields):
-    return [name for name, field_type in fields if field_type == "dimension"]
+    return [f.name for f in fields if f.type == "dimension"]
+
+
+def date_field_of(fields):
+    """Return the single date field's name, or None if not exactly one."""
+    dates = [f.name for f in fields if f.type == "date"]
+    return dates[0] if len(dates) == 1 else None
 
 
 def read_data_source_headers(client, cfg):
@@ -122,34 +267,56 @@ def require_input_tabs(client, cfg):
 def validate(client, cfg):
     """Check that Setup describes a usable tracker against Data Source.
 
-    Errors if there are no metrics, no dimensions, or any declared field is
-    missing from the Data Source headers.
+    Rules: at least one metric; exactly one date field; raw fields (no formula)
+    must be Data Source headers, while calculated fields (with a formula) skip
+    that check but their [Field] tokens must reference known raw fields.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)
     metrics = metrics_of(fields)
     dimensions = dimensions_of(fields)
+    dates = [f.name for f in fields if f.type == "date"]
+    by_name = {f.name: f for f in fields}
 
     errors = []
     if not metrics:
         errors.append("No metrics declared in Setup.")
-    if not dimensions:
-        errors.append("No dimensions declared in Setup.")
-
+    if len(dates) == 0:
+        errors.append("No date field. Tag exactly one field with type 'date'.")
+    elif len(dates) > 1:
+        errors.append("More than one date field; tag exactly one.")
     if not headers:
         errors.append("Data Source has no header row.")
-    else:
-        header_set = set(headers)
-        for name, _ in fields:
-            if name not in header_set:
-                errors.append(
-                    "Setup field '{}' is not a Data Source header.".format(name)
-                )
+
+    header_set = set(headers)
+    for f in fields:
+        if f.formula:
+            for token in formula_tokens(f.formula):
+                ref = by_name.get(token)
+                if ref is None:
+                    errors.append(
+                        "Calculated field '{}' references unknown field '{}'."
+                        .format(f.name, token)
+                    )
+                elif ref.formula:
+                    errors.append(
+                        "Calculated field '{}' references another calculated "
+                        "field '{}', which is not supported.".format(f.name, token)
+                    )
+        elif headers and f.name not in header_set:
+            errors.append(
+                "Setup field '{}' is not a Data Source header.".format(f.name)
+            )
 
     if errors:
         raise ValidationError(errors)
 
-    return {"metrics": metrics, "dimensions": dimensions, "headers": list(headers)}
+    return {
+        "metrics": metrics,
+        "dimensions": dimensions,
+        "date": dates[0],
+        "headers": list(headers),
+    }
 
 
 def generate_mapping(client, cfg):

@@ -1,6 +1,200 @@
 """Tests for the pure domain helpers in tracker.py."""
 
-from tracker import build_sumifs_formula, distinct_values
+import pytest
+
+from datetime import date
+
+from config import DEFAULT_CONFIG
+from tracker import (
+    Field,
+    ValidationError,
+    bucket_serial,
+    bucket_sumifs_expr,
+    build_calc_formula,
+    build_sumifs_formula,
+    date_field_of,
+    date_to_serial,
+    distinct_buckets,
+    distinct_values,
+    formula_tokens,
+    number_format_pattern,
+    sumifs_expr,
+    validate,
+)
+
+
+class FakeReader:
+    """Fake client exposing just read_range for validate/read_setup tests."""
+
+    def __init__(self, setup_rows, headers):
+        self._setup = setup_rows  # rows for setup!A2:D
+        self._headers = headers
+
+    def read_range(self, a1_range):
+        low = a1_range.lower()
+        if "setup" in low:
+            return self._setup
+        if "data_source" in low:
+            return [self._headers] if self._headers else []
+        return []
+
+
+class TestBucketing:
+    def test_day_bucket_is_same_serial(self):
+        s = date_to_serial(date(2025, 8, 19))
+        assert bucket_serial(s, "day") == s
+
+    def test_week_bucket_is_monday(self):
+        # 2025-08-19 is a Tuesday; its week starts Monday 2025-08-18.
+        s = date_to_serial(date(2025, 8, 19))
+        assert bucket_serial(s, "week") == date_to_serial(date(2025, 8, 18))
+
+    def test_month_bucket_is_first(self):
+        s = date_to_serial(date(2025, 8, 19))
+        assert bucket_serial(s, "month") == date_to_serial(date(2025, 8, 1))
+
+    def test_drops_time_component(self):
+        s = date_to_serial(date(2025, 8, 19)) + 0.75
+        assert bucket_serial(s, "day") == date_to_serial(date(2025, 8, 19))
+
+    def test_distinct_buckets_weekly_and_sorted(self):
+        serials = [
+            date_to_serial(date(2025, 8, 25)),  # Mon week B
+            date_to_serial(date(2025, 8, 19)),  # Tue week A
+            date_to_serial(date(2025, 8, 18)),  # Mon week A
+            "not-a-date",
+        ]
+        buckets = distinct_buckets(serials, "week")
+        assert buckets == [
+            date_to_serial(date(2025, 8, 18)),
+            date_to_serial(date(2025, 8, 25)),
+        ]
+
+
+class TestSumifsExpr:
+    def test_no_dims_is_sum(self):
+        assert sumifs_expr("Spend", []) == "SUM(Spend)"
+
+    def test_with_dims(self):
+        assert sumifs_expr("Spend", [("Region", "B2")]) == (
+            'SUMIFS(Spend, Region, IF(B2="**","<>",B2))'
+        )
+
+    def test_build_sumifs_formula_prefixes_equals(self):
+        assert build_sumifs_formula("Spend", []) == "=SUM(Spend)"
+
+
+class TestBucketSumifsExpr:
+    def test_month_bucket_with_dimension(self):
+        expr = bucket_sumifs_expr("Spend", "Day", "A5", "month", [("Region", "B2")])
+        assert expr == (
+            'SUMIFS(Spend, Day, ">="&A5, Day, "<"&(EOMONTH(A5,0)+1), '
+            'Region, IF(B2="**","<>",B2))'
+        )
+
+    def test_day_and_week_bounds(self):
+        assert '"<"&(A5+1)' in bucket_sumifs_expr("S", "D", "A5", "day", [])
+        assert '"<"&(A5+7)' in bucket_sumifs_expr("S", "D", "A5", "week", [])
+
+
+class TestBuildCalcFormula:
+    def test_substitutes_and_wraps_iferror(self):
+        formula = build_calc_formula("[Spend]/[Clicks]", lambda n: "X_" + n)
+        assert formula == '=IFERROR(X_Spend/X_Clicks, "")'
+
+
+class TestNumberFormatPattern:
+    def test_known_and_default(self):
+        assert number_format_pattern("currency") == "$#,##0"
+        assert number_format_pattern("percent") == "0%"
+        assert number_format_pattern("number") == "#,##0"
+        assert number_format_pattern("") == "#,##0"
+        assert number_format_pattern("weird") == "#,##0"
+
+
+class TestFormulaTokens:
+    def test_extracts_bracket_tokens(self):
+        assert formula_tokens("[Revenue]-[Cost]") == ["Revenue", "Cost"]
+
+    def test_handles_multiword_and_dedupes(self):
+        assert formula_tokens("[Ad Spend]/[Clicks]+[Ad Spend]") == ["Ad Spend", "Clicks"]
+
+    def test_empty(self):
+        assert formula_tokens("") == []
+        assert formula_tokens(None) == []
+
+
+class TestDateFieldOf:
+    def test_single_date(self):
+        fields = [Field("Day", "date", "", ""), Field("Spend", "metric", "", "")]
+        assert date_field_of(fields) == "Day"
+
+    def test_none_when_missing_or_multiple(self):
+        assert date_field_of([Field("Spend", "metric", "", "")]) is None
+        two = [Field("A", "date", "", ""), Field("B", "date", "", "")]
+        assert date_field_of(two) is None
+
+
+class TestValidate:
+    def _ok_setup(self):
+        # name, type, formula, fmt
+        return [
+            ["Day", "date", "", ""],
+            ["Region", "dimension", "", ""],
+            ["Spend", "metric", "", "currency"],
+            ["Clicks", "metric", "", "number"],
+            ["CPC", "metric", "[Spend]/[Clicks]", "currency"],
+        ]
+
+    def test_valid_tracker_passes(self):
+        client = FakeReader(self._ok_setup(), ["Day", "Region", "Spend", "Clicks"])
+        result = validate(client, DEFAULT_CONFIG)
+        assert result["date"] == "Day"
+        assert "Spend" in result["metrics"]
+
+    def test_calculated_field_skips_header_check(self):
+        # CPC is calculated and has no Data Source column; must not error.
+        client = FakeReader(self._ok_setup(), ["Day", "Region", "Spend", "Clicks"])
+        validate(client, DEFAULT_CONFIG)  # no raise
+
+    def test_missing_date_field(self):
+        setup = [["Spend", "metric", "", ""]]
+        client = FakeReader(setup, ["Spend"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("date field" in e for e in exc.value.errors)
+
+    def test_two_date_fields(self):
+        setup = [["A", "date", "", ""], ["B", "date", "", ""], ["M", "metric", "", ""]]
+        client = FakeReader(setup, ["A", "B", "M"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("exactly one" in e for e in exc.value.errors)
+
+    def test_raw_field_not_a_header(self):
+        setup = [["Day", "date", "", ""], ["Ghost", "metric", "", ""]]
+        client = FakeReader(setup, ["Day"])  # Ghost missing from headers
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("Ghost" in e for e in exc.value.errors)
+
+    def test_calc_referencing_unknown_field(self):
+        setup = [["Day", "date", "", ""], ["X", "metric", "[Nope]", ""]]
+        client = FakeReader(setup, ["Day"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("Nope" in e for e in exc.value.errors)
+
+    def test_calc_referencing_calc_rejected(self):
+        setup = [
+            ["Day", "date", "", ""],
+            ["A", "metric", "[Day]", ""],
+            ["B", "metric", "[A]", ""],
+        ]
+        client = FakeReader(setup, ["Day"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("another calculated" in e for e in exc.value.errors)
 
 
 class TestDistinctValues:
