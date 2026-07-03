@@ -1,10 +1,11 @@
 /**
- * Master control sheet logic.
+ * Master control sheet logic, driven by the Console tab (see Console.gs).
  *
- * createTracker:  create a clean sheet (no script), the operator owns it, share
- *                 the service account, then have the service scaffold + format
- *                 it and log it to BigQuery.
- * operateOnTracker: point the service at any sheet by URL and run an action.
+ * sendFromConsole:     act on the sheet whose URL sits in the Console, running
+ *                      the chosen action. scaffold also carries the details.
+ * newTrackerFromConsole: create a clean sheet the operator owns, share the
+ *                      service account, scaffold it, then point the Console at
+ *                      the new URL so the next Send targets it.
  *
  * The master calls the private service directly. The operator's identity token
  * authenticates to Cloud Run (its audience is registered; the operator has
@@ -13,159 +14,101 @@
  * Config.gs (gitignored) provides SERVICE_URL and SERVICE_ACCOUNT_EMAIL.
  */
 
-function createTracker() {
-  var ui = SpreadsheetApp.getUi();
-
-  var client = promptRequired_(ui, 'New tracker (1/3)', 'Client:');
-  if (client === null) {
+/** Tracker Admin > Send: run the Console's action on the Console's URL. */
+function sendFromConsole() {
+  var input = readConsole_();
+  if (!input) {
+    SpreadsheetApp.getUi().alert(
+      'No Console tab. Run Tracker Admin > Apply formatting first.');
     return;
   }
-  var subBrand = promptRequired_(ui, 'New tracker (2/3)', 'Sub-brand:');
-  if (subBrand === null) {
-    return;
-  }
-  var titleResponse = ui.prompt(
-    'New tracker (3/3)', 'Sheet title:', ui.ButtonSet.OK_CANCEL);
-  if (titleResponse.getSelectedButton() !== ui.Button.OK) {
-    return;
-  }
-  var title = titleResponse.getResponseText() || 'Performance Tracker';
-
-  // Create AS the operator (they own it), then let the service account edit it.
-  var ss = SpreadsheetApp.create(title);
-  shareWithServiceAccount_(ss);
-  var url = ss.getUrl();
-
-  var parsed = postToService_({
-    action: 'scaffold',
-    spreadsheet_id: ss.getId(),
-    url: url,
-    title: title,
-    client: client,
-    sub_brand: subBrand
-  });
-  if (parsed && parsed.status === 'ok') {
-    SpreadsheetApp.getActiveSpreadsheet().toast(title + ' created', 'New tracker', 5);
-    logCreatedTracker_(title, client, subBrand, url);
-  } else {
-    ui.alert(
-      'Created the sheet but registration failed: ' +
-      ((parsed && parsed.message) || 'unknown error')
-    );
-  }
-}
-
-/**
- * Prepare an EXISTING sheet as a tracker: ensure + format the input tabs and
- * register it. For a sheet that is not yet set up (e.g. missing data_source).
- */
-function setUpExistingSheet() {
-  var ui = SpreadsheetApp.getUi();
-  var urlResponse = ui.prompt(
-    'Set up an existing sheet', 'Paste the sheet URL (or ID):',
-    ui.ButtonSet.OK_CANCEL);
-  if (urlResponse.getSelectedButton() !== ui.Button.OK) {
-    return;
-  }
-  var id = parseSheetId_(urlResponse.getResponseText());
+  var id = parseSheetId_(input.url);
   if (!id) {
-    ui.alert('Could not read a sheet ID from that.');
+    writeStatus_('Paste a valid tracker URL into ' + CELL_URL + ' and try again.');
     return;
   }
 
-  var client = promptRequired_(ui, 'Set up (1/3)', 'Client:');
-  if (client === null) {
-    return;
-  }
-  var subBrand = promptRequired_(ui, 'Set up (2/3)', 'Sub-brand:');
-  if (subBrand === null) {
-    return;
-  }
-  var titleResponse = ui.prompt('Set up (3/3)', 'Title:', ui.ButtonSet.OK_CANCEL);
-  if (titleResponse.getSelectedButton() !== ui.Button.OK) {
-    return;
-  }
-  var title = titleResponse.getResponseText() || 'Performance Tracker';
-
+  // The service account must be able to edit the target; the operator must own
+  // or edit it for this share to succeed.
   var ss;
   try {
     ss = SpreadsheetApp.openById(id);
     shareWithServiceAccount_(ss);
   } catch (err) {
-    ui.alert('Could not open or share that sheet: ' + err);
+    writeStatus_('Could not open or share that sheet: ' + err);
     return;
   }
 
+  writeStatus_('Running ' + input.action + '...');
+  var payload = { action: input.action, spreadsheet_id: id };
+  if (input.action === 'scaffold') {
+    payload.url = ss.getUrl();
+    payload.title = input.title;
+    payload.client = input.client;
+    payload.sub_brand = input.subBrand;
+  }
+
+  var parsed = postToService_(payload);
+  if (parsed && parsed.status === 'ok') {
+    writeStatus_(input.action + ': ' + (parsed.message || 'done'));
+    if (input.action === 'scaffold') {
+      logTracker_(input.title, input.client, input.subBrand, ss.getUrl());
+    }
+  } else {
+    writeStatus_(input.action + ' failed: ' + serviceErrorText_(parsed));
+  }
+}
+
+/** Tracker Admin > New tracker: create a clean sheet from the Console details. */
+function newTrackerFromConsole() {
+  var ui = SpreadsheetApp.getUi();
+  var input = readConsole_();
+  if (!input) {
+    ui.alert('No Console tab. Run Tracker Admin > Apply formatting first.');
+    return;
+  }
+  // The service requires these to register the tracker; block loudly, not just
+  // with a status line, so it is obvious why nothing was created.
+  if (!input.client || !input.subBrand) {
+    var msg = 'Fill in Client and Sub-brand on the Console (cells ' +
+      CELL_CLIENT + ' and ' + CELL_SUBBRAND + '), then New tracker again.';
+    writeStatus_(msg);
+    ui.alert('New tracker', msg, ui.ButtonSet.OK);
+    return;
+  }
+
+  // Create AS the operator (they own it), then let the service account edit it.
+  var ss = SpreadsheetApp.create(input.title);
+  shareWithServiceAccount_(ss);
+  var url = ss.getUrl();
+
+  writeStatus_('Creating "' + input.title + '"...');
   var parsed = postToService_({
     action: 'scaffold',
-    spreadsheet_id: id,
-    url: ss.getUrl(),
-    title: title,
-    client: client,
-    sub_brand: subBrand
+    spreadsheet_id: ss.getId(),
+    url: url,
+    title: input.title,
+    client: input.client,
+    sub_brand: input.subBrand
   });
+
   if (parsed && parsed.status === 'ok') {
-    SpreadsheetApp.getActiveSpreadsheet().toast(title + ' set up', 'Set up', 5);
-    logCreatedTracker_(title, client, subBrand, ss.getUrl());
+    // Point the Console at the new sheet so the next Send targets it.
+    consoleSheet_().getRange(CELL_URL).setValue(url);
+    writeStatus_('Created "' + input.title + '". URL is now in ' + CELL_URL +
+      '. Fill its setup + data_source tabs, then Send with run_all.');
+    logTracker_(input.title, input.client, input.subBrand, url);
+    ui.alert(
+      'Tracker created',
+      '"' + input.title + '" was created and scaffolded.\n\n' + url +
+        '\n\nIts URL is now in the Console. Fill in its setup and data_source ' +
+        'tabs, then use Send with the run_all action.',
+      ui.ButtonSet.OK);
   } else {
-    ui.alert('Set up failed: ' + ((parsed && parsed.message) || 'unknown error'));
+    var err = 'Created the sheet but scaffolding failed: ' + serviceErrorText_(parsed);
+    writeStatus_(err);
+    ui.alert('New tracker', err, ui.ButtonSet.OK);
   }
-}
-
-function operateOnTracker() {
-  var ui = SpreadsheetApp.getUi();
-  var response = ui.prompt(
-    'Operate on tracker', 'Paste the tracker sheet URL (or ID):',
-    ui.ButtonSet.OK_CANCEL);
-  if (response.getSelectedButton() !== ui.Button.OK) {
-    return;
-  }
-  var id = parseSheetId_(response.getResponseText());
-  if (!id) {
-    ui.alert('Could not read a sheet ID from that.');
-    return;
-  }
-
-  // The service account must be able to edit the sheet. The operator must be
-  // able to share it (own/edit it) for this to succeed.
-  try {
-    shareWithServiceAccount_(SpreadsheetApp.openById(id));
-  } catch (err) {
-    ui.alert('Could not share that sheet with the service account: ' + err);
-    return;
-  }
-
-  var parsed = postToService_({ action: 'list_actions' });
-  if (!parsed || parsed.status !== 'ok') {
-    ui.alert('Could not load actions: ' + (parsed && parsed.message));
-    return;
-  }
-  var actions = (parsed.detail && parsed.detail.actions) || [];
-  var buttons = actions
-    .map(function (a) {
-      return '<button style="margin:4px 0;width:100%" onclick="run(\'' +
-        a.action + '\')">' + a.label + '</button>';
-    })
-    .join('');
-  var html = HtmlService.createHtmlOutput(
-    '<div style="font-family:Arial,sans-serif;padding:8px">' + buttons +
-    '<p id="msg" style="color:#5f6368"></p></div>' +
-    '<script>function run(a){' +
-    'document.getElementById("msg").innerText="Running "+a+"...";' +
-    'google.script.run.withSuccessHandler(function(m){' +
-    'document.getElementById("msg").innerText=m;}).runActionOnTarget(a,"' + id + '");}' +
-    '</script>'
-  ).setWidth(280).setHeight(320);
-  ui.showModalDialog(html, 'Operate on tracker');
-}
-
-/** Called from the operate dialog; runs one action on the target sheet. */
-function runActionOnTarget(action, spreadsheetId) {
-  var parsed = postToService_({ action: action, spreadsheet_id: spreadsheetId });
-  if (parsed && parsed.status === 'ok') {
-    return action + ': ' + (parsed.message || 'done');
-  }
-  return action + ' failed: ' + serviceErrorText_(parsed);
 }
 
 /** Message plus any specific service errors (e.g. why a sheet is not ready). */
@@ -197,36 +140,6 @@ function parseSheetId_(text) {
     return match[1];
   }
   return /^[a-zA-Z0-9-_]+$/.test(text) ? text : '';
-}
-
-function promptRequired_(ui, title, label) {
-  while (true) {
-    var response = ui.prompt(title, label, ui.ButtonSet.OK_CANCEL);
-    if (response.getSelectedButton() !== ui.Button.OK) {
-      return null;
-    }
-    var value = response.getResponseText().trim();
-    if (value) {
-      return value;
-    }
-    ui.alert('This field is required.');
-  }
-}
-
-/**
- * Append a clickable record of a created tracker to the Admin tab, so the URL
- * is captured without a blocking dialog.
- */
-function logCreatedTracker_(title, client, subBrand, url) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('Admin');
-  if (!sheet) {
-    return;
-  }
-  var label = String(title).replace(/"/g, '""');
-  var row = sheet.getLastRow() + 1;
-  sheet.getRange(row, 1).setValue(new Date());
-  sheet.getRange(row, 2).setValue(client + ' / ' + subBrand);
-  sheet.getRange(row, 3).setFormula('=HYPERLINK("' + url + '","' + label + '")');
 }
 
 function postToService_(payload) {

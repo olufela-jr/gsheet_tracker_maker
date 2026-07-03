@@ -3,10 +3,15 @@
 One script, managed with [clasp](https://github.com/google/clasp). It is the
 ONLY script in the system - trackers carry no script at all.
 
-- `master/` - the control sheet. `New tracker` creates a clean sheet (the
-  operator owns it), shares the service account, and has the service scaffold +
-  format it. `Operate on tracker` points the service at any sheet by URL and
-  runs an action. `setupMaster()` formats the control panel.
+- `master/` - the control sheet, driven from an on-sheet **Console** tab.
+  Paste a tracker URL, pick an action, then `Tracker Admin > Send` acts on that
+  sheet and writes the result to the Console's Status cell (no more prompts or
+  toasts). `New tracker` creates a clean sheet from the Console details (the
+  operator owns it), shares the service account, scaffolds it, and points the
+  Console at the new URL. `setupMaster()` (Apply formatting) builds the three
+  tabs: **Console** (control panel), **How-to** (a guide to the setup schema),
+  and **Log** (created trackers). Cell addresses and the action list live in
+  `Console.gs`.
 
 Trackers are pure data: no bound script, no per-sheet authorization, nothing to
 keep in sync.
