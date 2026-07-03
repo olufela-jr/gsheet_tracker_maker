@@ -15,8 +15,6 @@ else
   gcloud projects create "${PROJECT_ID}"
 fi
 
-gcloud config set project "${PROJECT_ID}"
-
 if [ "$(gcloud billing projects describe "${PROJECT_ID}" \
       --format='value(billingEnabled)' 2>/dev/null)" = "True" ]; then
   echo "Billing already linked, skipping."

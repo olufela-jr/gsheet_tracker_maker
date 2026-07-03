@@ -7,6 +7,10 @@ export REGION="asia-south1"
 export SERVICE_NAME="tracker-service"
 export SA_NAME="tracker-runner"
 
+# Optional: the gcloud account to run deploys as (must be able to act as the
+# service account). Leave empty to use whatever account is active.
+export GCLOUD_ACCOUNT=""
+
 # BigQuery audit log. bootstrap.sh creates the dataset and table and grants the
 # service account access. Leave BQ_DATASET empty to deploy without logging.
 export BQ_LOCATION="asia-south1"
