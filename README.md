@@ -48,9 +48,15 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
 - **setup** (input) declares the schema. Column A is the field name, column B is
   the type (`metric`, `dimension`, or `date` - tag exactly one field `date`),
   column C is an optional `[Field]`-token formula for a calculated metric (for
-  example `[Spend]/[Clicks]`), and column D is a number-format hint
-  (`currency`, `percent`, `number`). Raw fields must match a data_source header
-  exactly; calculated fields need not. Row 1 is a header and is skipped.
+  example `[Spend]/[Clicks]`), column D is a number-format hint
+  (`currency`, `percent`, `number`), and column E is a per-dimension **Show in
+  views** checkbox. Only dimensions with that box checked become filter
+  dropdowns in the daily/weekly/monthly views; an unchecked dimension stays in
+  the data but is hidden from the front end (metrics aggregate over all its
+  values). Raw fields must match a data_source header exactly; calculated
+  fields need not. Metrics and dimensions render in Setup row order, so a
+  calculated metric placed between two raw ones appears between them. Row 1 is
+  a header and is skipped.
 - **data_source** (input) is the raw data. Row 1 is headers, row 2+ is data.
 - **mapping** (generated) has one column per dimension: row 1 the dimension
   name, row 2 the `**` sentinel (meaning "All"), row 3+ the distinct values.

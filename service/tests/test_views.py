@@ -72,11 +72,11 @@ class FakeClient:
 
 def _client(granularity_tab):
     setup = [
-        ["Day", "date", "", ""],
-        ["Region", "dimension", "", ""],
-        ["Spend", "metric", "", "currency"],
-        ["Clicks", "metric", "", "number"],
-        ["CPC", "metric", "[Spend]/[Clicks]", "currency"],
+        ["Day", "date", "", "", ""],
+        ["Region", "dimension", "", "", "TRUE"],
+        ["Spend", "metric", "", "currency", ""],
+        ["Clicks", "metric", "", "number", ""],
+        ["CPC", "metric", "[Spend]/[Clicks]", "currency", ""],
     ]
     headers = ["Day", "Region", "Spend", "Clicks"]
     serials = [

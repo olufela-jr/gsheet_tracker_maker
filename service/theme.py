@@ -401,7 +401,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
     if setup_sheet_id is not None:
         requests.append(
             _format(
-                setup_sheet_id, 0, 1, 0, 2,
+                setup_sheet_id, 0, 1, 0, 5,
                 {"backgroundColor": BANNER_BG, "textFormat": _text(10, BANNER_TEXT, bold=True)},
                 "userEnteredFormat(backgroundColor,textFormat)",
             )
@@ -409,10 +409,31 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(_freeze_header(setup_sheet_id))
         requests.append(_col_width(setup_sheet_id, 0, 1, 220))
         requests.append(_col_width(setup_sheet_id, 1, 2, 120))
+        requests.append(_col_width(setup_sheet_id, 4, 5, 120))
         requests.append(
             _note(setup_sheet_id, 0, 0, "Field must exactly match a header in data_source.")
         )
         requests.append(_note(setup_sheet_id, 0, 1, 'Type is "metric" or "dimension".'))
+        requests.append(
+            _note(
+                setup_sheet_id, 0, 4,
+                "Dimensions only: check to show this dimension as a filter in "
+                "the daily/weekly/monthly views. Blank = hidden from the views.",
+            )
+        )
+        # Checkboxes down the Show column so the toggle is obvious.
+        requests.append(
+            {
+                "setDataValidation": {
+                    "range": _grid(setup_sheet_id, 1, 1000, 4, 5),
+                    "rule": {
+                        "condition": {"type": "BOOLEAN"},
+                        "showCustomUi": True,
+                        "strict": False,
+                    },
+                }
+            }
+        )
 
     if data_source_sheet_id is not None:
         requests.append(_freeze_header(data_source_sheet_id))

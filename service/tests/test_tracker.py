@@ -14,9 +14,11 @@ from tracker import (
     build_sumifs_formula,
     date_field_of,
     date_to_serial,
+    dimensions_of,
     distinct_buckets,
     distinct_values,
     formula_tokens,
+    read_setup,
     number_format_pattern,
     sumifs_expr,
     validate,
@@ -27,7 +29,7 @@ class FakeReader:
     """Fake client exposing just read_range for validate/read_setup tests."""
 
     def __init__(self, setup_rows, headers):
-        self._setup = setup_rows  # rows for setup!A2:D
+        self._setup = setup_rows  # rows for setup!A2:E
         self._headers = headers
 
     def read_range(self, a1_range):
@@ -137,13 +139,13 @@ class TestDateFieldOf:
 
 class TestValidate:
     def _ok_setup(self):
-        # name, type, formula, fmt
+        # name, type, formula, fmt, show
         return [
-            ["Day", "date", "", ""],
-            ["Region", "dimension", "", ""],
-            ["Spend", "metric", "", "currency"],
-            ["Clicks", "metric", "", "number"],
-            ["CPC", "metric", "[Spend]/[Clicks]", "currency"],
+            ["Day", "date", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE"],
+            ["Spend", "metric", "", "currency", ""],
+            ["Clicks", "metric", "", "number", ""],
+            ["CPC", "metric", "[Spend]/[Clicks]", "currency", ""],
         ]
 
     def test_valid_tracker_passes(self):
@@ -195,6 +197,49 @@ class TestValidate:
         with pytest.raises(ValidationError) as exc:
             validate(client, DEFAULT_CONFIG)
         assert any("another calculated" in e for e in exc.value.errors)
+
+
+class TestShowToggle:
+    def test_read_setup_parses_show_column(self):
+        setup = [
+            ["Day", "date", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE"],
+            ["Channel", "dimension", "", "", ""],
+            ["Spend", "metric", "", "currency", ""],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        by_name = {f.name: f for f in fields}
+        assert by_name["Region"].show is True
+        assert by_name["Channel"].show is False
+
+    def test_hidden_dimension_excluded_from_views(self):
+        setup = [
+            ["Day", "date", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE"],
+            ["Channel", "dimension", "", "", ""],  # blank = hidden
+            ["Spend", "metric", "", "currency", ""],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        assert dimensions_of(fields) == ["Region"]
+
+    def test_show_accepts_checkbox_and_typed_affirmatives(self):
+        setup = [
+            ["Day", "date", "", "", ""],
+            ["A", "dimension", "", "", "true"],
+            ["B", "dimension", "", "", "x"],
+            ["C", "dimension", "", "", "yes"],
+            ["D", "dimension", "", "", "FALSE"],
+            ["E", "dimension", "", "", "  "],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        assert dimensions_of(fields) == ["A", "B", "C"]
+
+    def test_dimensions_of_preserves_setup_order(self):
+        fields = [
+            Field("Region", "dimension", "", "", True),
+            Field("Channel", "dimension", "", "", True),
+        ]
+        assert dimensions_of(fields) == ["Region", "Channel"]
 
 
 class TestDistinctValues:

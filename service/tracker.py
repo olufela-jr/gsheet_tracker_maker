@@ -18,7 +18,10 @@ from config import column_to_letter, sanitise_name, a1
 #   type:    "metric" | "dimension" | "date" (column B)
 #   formula: bracket-token expression for a calculated metric, or "" for raw (C)
 #   fmt:     "currency" | "percent" | "number" | "" number format hint (D)
-Field = namedtuple("Field", ["name", "type", "formula", "fmt"])
+#   show:    dimensions only — True shows the dimension as a filter in the
+#            daily/weekly/monthly views; blank/False keeps it in the data but
+#            hides it from the front end (Setup column E)
+Field = namedtuple("Field", ["name", "type", "formula", "fmt", "show"], defaults=(False,))
 
 # Matches [Field Name] tokens in a calculated field's formula (brackets so
 # multi-word names work).
@@ -194,12 +197,23 @@ def _cell(row, i):
     return (row[i].strip() if len(row) > i and row[i] else "")
 
 
+# Values a Setup "Show" cell may carry: a checkbox (TRUE/FALSE) or a hand-typed
+# affirmative. Anything else — including blank — reads as hidden.
+_TRUTHY = {"true", "yes", "y", "x", "1", "✓", "on"}
+
+
+def _truthy(value):
+    return value.strip().lower() in _TRUTHY
+
+
 def read_setup(client, cfg):
     """Read Setup rows below the header into a list of Field tuples.
 
-    Columns: A name, B type, C formula (calculated metrics), D format hint.
+    Columns: A name, B type, C formula (calculated metrics), D format hint,
+    E show (dimensions only — checked shows the dimension as a filter in the
+    views, blank hides it).
     """
-    rows = client.read_range(a1(cfg.setup_tab, "A2:D"))
+    rows = client.read_range(a1(cfg.setup_tab, "A2:E"))
     fields = []
     for row in rows:
         if not row:
@@ -213,6 +227,7 @@ def read_setup(client, cfg):
                 type=_cell(row, 1).lower(),
                 formula=_cell(row, 2),
                 fmt=_cell(row, 3).lower(),
+                show=_truthy(_cell(row, 4)),
             )
         )
     return fields
@@ -223,7 +238,14 @@ def metrics_of(fields):
 
 
 def dimensions_of(fields):
-    return [f.name for f in fields if f.type == "dimension"]
+    """Dimension names that drive the front end, in Setup order.
+
+    Only dimensions with the Show box checked become filter dropdowns and
+    mapping columns. An unchecked dimension stays in the data but is hidden
+    from the daily/weekly/monthly views, and metrics simply aggregate over all
+    its values (no SUMIFS clause for it).
+    """
+    return [f.name for f in fields if f.type == "dimension" and f.show]
 
 
 def date_field_of(fields):
@@ -738,7 +760,9 @@ def scaffold(client, cfg):
     created_setup = cfg.setup_tab.lower() in {m.lower() for m in missing}
     if created_setup:
         client.write_values(
-            a1(cfg.setup_tab, "A1:B1"), [["Field", "Type"]], value_input_option="RAW"
+            a1(cfg.setup_tab, "A1:E1"),
+            [["Field", "Type", "Formula", "Format", "Show in views"]],
+            value_input_option="RAW",
         )
 
     # Format any input tab we just created (header banner, frozen row, widths,
