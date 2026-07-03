@@ -38,7 +38,10 @@ class TestFrontendFormat:
         # No dimensions and no metrics still themes the page and banner.
         requests = theme.frontend_format(1, num_dimensions=0, num_metrics=0)
         assert len(requests) > 0
-        assert any("mergeCells" in r for r in requests)
+
+    def test_no_merges_anywhere(self):
+        requests = theme.frontend_format(1, num_dimensions=2, num_metrics=3)
+        assert not any("mergeCells" in r for r in requests)
 
     def test_borders_come_after_formats(self):
         requests = theme.frontend_format(1, num_dimensions=1, num_metrics=1)

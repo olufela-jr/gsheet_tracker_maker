@@ -22,17 +22,18 @@ def rgb(hex_str):
     }
 
 
-# --- palette (dark slate banner, teal accent) -----------------------------
+# --- palette (navy headers, periwinkle highlight, white cells) ------------
 
-PAGE_BG = rgb("F1F3F4")
+PAGE_BG = rgb("F1F3F4")       # soft grey page (kept)
 CARD_BG = rgb("FFFFFF")
-BANNER_BG = rgb("202124")
+BANNER_BG = rgb("1F3864")     # dark navy header
 BANNER_TEXT = rgb("FFFFFF")
-ACCENT = rgb("009688")
+PERIWINKLE = rgb("8EAADB")    # light-blue highlight (metric captions)
+ACCENT = rgb("1F3864")        # navy value text
 MUTED_TEXT = rgb("5F6368")
 HEADING_TEXT = rgb("202124")
-BORDER = rgb("DADCE0")
-FONT = "Roboto"
+BORDER = rgb("BFBFBF")
+FONT = "Arial"
 
 
 # --- layout (1-based rows, 0-based columns) -------------------------------
@@ -89,9 +90,6 @@ def _format(sheet_id, r1, r2, c1, c2, fmt, fields):
         }
     }
 
-
-def _merge(sheet_id, r1, r2, c1, c2):
-    return {"mergeCells": {"range": _grid(sheet_id, r1, r2, c1, c2), "mergeType": "MERGE_ALL"}}
 
 
 def _outer_border(sheet_id, r1, r2, c1, c2, color=BORDER):
@@ -153,9 +151,9 @@ def _text(font_size, color, bold=False):
 def frontend_format(sheet_id, num_dimensions, num_metrics):
     """Return the ordered batchUpdate requests that theme the Frontend tab.
 
-    Order matters: cell formats and merges go in first, borders last, because
-    a repeatCell on userEnteredFormat fields would otherwise wipe a border set
-    earlier on the same cell.
+    Order matters: cell formats go in first, borders last, because a repeatCell
+    on userEnteredFormat fields would otherwise wipe a border set earlier on the
+    same cell.
     """
     lay = LAYOUT
 
@@ -184,9 +182,9 @@ def frontend_format(sheet_id, num_dimensions, num_metrics):
         )
     )
 
-    # Title banner: merged dark slate bar with white bold text.
+    # Title banner: a navy bar (no merge) with white bold text. The title sits
+    # in the first cell and overflows across the navy row.
     title_r = lay.title_row - 1
-    requests.append(_merge(sheet_id, title_r, title_r + 1, 0, banner_end_col))
     requests.append(
         _format(
             sheet_id,
@@ -205,7 +203,7 @@ def frontend_format(sheet_id, num_dimensions, num_metrics):
         )
     )
 
-    # Filter captions (small grey bold) and the dropdown input cells (white).
+    # Filter captions (navy header cells) and the dropdown input cells (white).
     if num_dimensions:
         label_r = lay.filter_label_row - 1
         drop_r = lay.filter_dropdown_row - 1
@@ -216,8 +214,14 @@ def frontend_format(sheet_id, num_dimensions, num_metrics):
                 label_r + 1,
                 0,
                 num_dimensions,
-                {"textFormat": _text(9, MUTED_TEXT, bold=True)},
-                "userEnteredFormat(textFormat)",
+                {
+                    "backgroundColor": BANNER_BG,
+                    "textFormat": _text(9, BANNER_TEXT, bold=True),
+                    "verticalAlignment": "MIDDLE",
+                    "horizontalAlignment": "LEFT",
+                    "padding": {"left": 8},
+                },
+                "userEnteredFormat(backgroundColor,textFormat,verticalAlignment,horizontalAlignment,padding)",
             )
         )
         requests.append(
@@ -251,8 +255,8 @@ def frontend_format(sheet_id, num_dimensions, num_metrics):
                 col,
                 col + 1,
                 {
-                    "backgroundColor": CARD_BG,
-                    "textFormat": _text(9, MUTED_TEXT, bold=True),
+                    "backgroundColor": PERIWINKLE,
+                    "textFormat": _text(9, BANNER_TEXT, bold=True),
                     "verticalAlignment": "MIDDLE",
                     "horizontalAlignment": "LEFT",
                     "padding": {"left": 12, "top": 6},
@@ -291,7 +295,9 @@ def frontend_format(sheet_id, num_dimensions, num_metrics):
 
     # Borders last so the cell-format pass above does not clear them.
     if num_dimensions:
+        label_r = lay.filter_label_row - 1
         drop_r = lay.filter_dropdown_row - 1
+        requests.append(_outer_border(sheet_id, label_r, label_r + 1, 0, num_dimensions))
         requests.append(_outer_border(sheet_id, drop_r, drop_r + 1, 0, num_dimensions))
     for i in range(num_metrics):
         col = metric_column(i)

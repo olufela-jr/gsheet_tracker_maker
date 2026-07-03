@@ -12,18 +12,19 @@ function setupMaster() {
   sheet.setName('Admin');
   sheet.setHiddenGridlines(true);
 
-  var title = sheet.getRange('A1:F1');
-  title.merge()
-    .setValue('Tracker Admin')
-    .setBackground('#202124')
+  // Navy banner across A1:F1, no merge (the title overflows across the row).
+  sheet.getRange('A1:F1')
+    .setBackground('#1F3864')
     .setFontColor('#ffffff')
     .setFontSize(16)
     .setFontWeight('bold')
+    .setFontFamily('Arial')
     .setVerticalAlignment('middle');
+  sheet.getRange('A1').setValue('Tracker Admin');
   sheet.setRowHeight(1, 48);
 
   sheet.getRange('A3')
-    .setValue('Tracker Admin > New tracker creates a tracker (a copy of the template).')
+    .setValue('New tracker creates a clean sheet; Operate on tracker acts on a sheet by URL.')
     .setFontColor('#5f6368');
   sheet.getRange('A4')
     .setValue('Each tracker is owned by its creator and logged to BigQuery.')
