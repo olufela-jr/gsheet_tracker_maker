@@ -12,12 +12,14 @@ from tracker import (
     bucket_sumifs_expr,
     build_calc_formula,
     build_sumifs_formula,
+    breakout_dimensions_of,
     date_field_of,
     date_to_serial,
     dimensions_of,
     distinct_buckets,
     distinct_values,
     formula_tokens,
+    mapping_dimensions_of,
     read_setup,
     number_format_pattern,
     sumifs_expr,
@@ -240,6 +242,44 @@ class TestShowToggle:
             Field("Channel", "dimension", "", "", True),
         ]
         assert dimensions_of(fields) == ["Region", "Channel"]
+
+
+class TestBreakoutColumn:
+    def test_read_setup_parses_breakout_column(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "TRUE"],
+            ["Channel", "dimension", "", "", "TRUE", ""],
+            ["Market", "dimension", "", "", "", "TRUE"],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        by_name = {f.name: f for f in fields}
+        assert by_name["Region"].breakout is True
+        assert by_name["Channel"].breakout is False
+        assert by_name["Market"].breakout is True
+
+    def test_breakout_is_independent_of_show(self):
+        # Market is broken out but not shown; Channel is shown but not broken out.
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "TRUE"],
+            ["Channel", "dimension", "", "", "TRUE", ""],
+            ["Market", "dimension", "", "", "", "TRUE"],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        assert dimensions_of(fields) == ["Region", "Channel"]
+        assert breakout_dimensions_of(fields) == ["Region", "Market"]
+
+    def test_mapping_covers_shown_or_broken_out(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "TRUE"],
+            ["Channel", "dimension", "", "", "TRUE", ""],
+            ["Market", "dimension", "", "", "", "TRUE"],
+            ["Ghost", "dimension", "", "", "", ""],  # neither: no mapping column
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        assert mapping_dimensions_of(fields) == ["Region", "Channel", "Market"]
 
 
 class TestDistinctValues:

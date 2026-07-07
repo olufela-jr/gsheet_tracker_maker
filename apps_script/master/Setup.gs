@@ -131,54 +131,61 @@ function buildHowTo_(ss) {
     'B  Type: metric, dimension, or date (tag exactly one field as date).\n' +
     'C  Formula: optional [Field]-token expression for a calculated metric, e.g. [Spend]/[Clicks].\n' +
     'D  Format: optional number format: currency, percent, or number.\n' +
-    'E  Show in views: dimensions only; check the box to show it as a filter, leave blank to hide it.');
-  sheet.setRowHeight(7, 120);
+    'E  Show in views: dimensions only; check to show it as a filter, blank hides it.\n' +
+    'F  Break-out table: dimensions only; check to add a totals-per-value table for it on every view.');
+  sheet.setRowHeight(7, 140);
 
   heading_(sheet, 'A9', '3. Example setup');
   var example = [
-    ['Field', 'Type', 'Formula', 'Format', 'Show in views'],
-    ['Day', 'date', '', '', ''],
-    ['Region', 'dimension', '', '', 'TRUE'],
-    ['Channel', 'dimension', '', '', ''],
-    ['Spend', 'metric', '', 'currency', ''],
-    ['Clicks', 'metric', '', 'number', ''],
-    ['CPC', 'metric', '[Spend]/[Clicks]', 'currency', '']
+    ['Field', 'Type', 'Formula', 'Format', 'Show in views', 'Break-out table'],
+    ['Day', 'date', '', '', '', ''],
+    ['Region', 'dimension', '', '', 'TRUE', 'TRUE'],
+    ['Channel', 'dimension', '', '', '', ''],
+    ['Market', 'dimension', '', '', '', 'TRUE'],
+    ['Spend', 'metric', '', 'currency', '', ''],
+    ['Clicks', 'metric', '', 'number', '', ''],
+    ['CPC', 'metric', '[Spend]/[Clicks]', 'currency', '', '']
   ];
-  sheet.getRange(10, 1, example.length, 5).setValues(example);
-  sheet.getRange(10, 1, 1, 5)
+  sheet.getRange(10, 1, example.length, 6).setValues(example);
+  sheet.getRange(10, 1, 1, 6)
     .setBackground(NAVY).setFontColor(WHITE).setFontWeight('bold');
-  sheet.getRange(10, 1, example.length, 5)
+  sheet.getRange(10, 1, example.length, 6)
     .setBorder(true, true, true, true, true, true, BORDER,
                SpreadsheetApp.BorderStyle.SOLID);
-  para_(sheet, 'A18',
-    'Channel is a dimension with Show blank, so it stays in the data but is ' +
-    'hidden from the views. Metrics and dimensions appear in the views in this ' +
-    'row order, so a calculated metric like CPC shows exactly where you place it.');
-  sheet.setRowHeight(18, 40);
+  para_(sheet, 'A19',
+    'Channel has Show blank, so it stays in the data but is hidden from the ' +
+    'views. Region and Market have Break-out table checked, so each gets its own ' +
+    'totals-per-value table. Rows render in this order, so a calculated metric ' +
+    'like CPC shows exactly where you place it.');
+  sheet.setRowHeight(19, 44);
 
-  heading_(sheet, 'A20', '4. The data_source tab');
-  para_(sheet, 'A21',
+  heading_(sheet, 'A21', '4. The data_source tab');
+  para_(sheet, 'A22',
     'Row 1 is headers, row 2+ is your data. Header names must match the raw ' +
     'Field names in setup exactly.');
 
-  heading_(sheet, 'A23', '5. What gets generated');
-  para_(sheet, 'A24',
+  heading_(sheet, 'A24', '5. What gets generated');
+  para_(sheet, 'A25',
     'mapping (the filter values per dimension) and the daily / weekly / monthly ' +
-    'views, each with a filter bar, a KPI totals strip, and a date-bucketed metric ' +
-    'matrix. The monthly view also carries a line chart.');
-  sheet.setRowHeight(24, 40);
+    'views. Each view has a filter bar, a KPI totals strip, and a date-bucketed ' +
+    'metric matrix. Weekly and monthly also get a compare block (pick two periods ' +
+    'to see each metric side by side with a % change) and a % change column per ' +
+    'metric. Any dimension flagged Break-out table gets its own totals-per-value ' +
+    'table stacked below. The monthly view also carries a line chart.');
+  sheet.setRowHeight(25, 58);
 
-  heading_(sheet, 'A26', '6. Run it');
-  para_(sheet, 'A27',
+  heading_(sheet, 'A27', '6. Run it');
+  para_(sheet, 'A28',
     'Paste the tracker URL into the Console tab, pick an action (Refresh = ' +
     'run_all), then Tracker Admin ▸ Send. The outcome appears in the ' +
     'Console Status cell.');
 
   sheet.setColumnWidth(1, 520);
-  sheet.setColumnWidth(2, 110);
+  sheet.setColumnWidth(2, 100);
   sheet.setColumnWidth(3, 170);
   sheet.setColumnWidth(4, 90);
   sheet.setColumnWidth(5, 110);
+  sheet.setColumnWidth(6, 120);
 }
 
 /** Ensure a Log tab exists with a header; adopt the old Admin tab if present. */

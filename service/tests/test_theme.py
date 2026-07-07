@@ -16,73 +16,50 @@ class TestRgb:
         assert abs(theme.rgb("808080")["red"] - 128 / 255) < 1e-9
 
 
-class TestMetricColumn:
-    def test_period_then_metrics(self):
-        # Column A is the period; metric 0 is column B (index 1).
-        assert theme.metric_column(0) == 1
-        assert theme.metric_column(1) == 2
-        assert theme.metric_column(2) == 3
-
-
-def _meta(n, calc_indices=()):
-    return [(i in calc_indices, "#,##0") for i in range(n)]
-
-
-class TestViewFormat:
-    def test_first_request_hides_gridlines(self):
-        requests = theme.view_format_requests(
-            123, num_dimensions=2, metrics_meta=_meta(3), num_buckets=5,
-            date_pattern="d-mmm-yyyy",
-        )
-        assert "updateSheetProperties" in requests[0]
+class TestPrimitives:
+    def test_hide_gridlines(self):
+        req = theme.hide_gridlines(123)
         assert (
-            requests[0]["updateSheetProperties"]["properties"]["gridProperties"][
+            req["updateSheetProperties"]["properties"]["gridProperties"][
                 "hideGridlines"
             ]
             is True
         )
 
-    def test_returns_requests_for_empty_tracker(self):
-        # No dimensions, metrics, or buckets still themes the page and banner.
-        requests = theme.view_format_requests(
-            1, num_dimensions=0, metrics_meta=_meta(0), num_buckets=0,
-            date_pattern="d-mmm-yyyy",
-        )
-        assert len(requests) > 0
+    def test_header_and_value_and_banner_are_repeat_cells(self):
+        assert "repeatCell" in theme.header_row(1, 8, 0, 4)
+        assert "repeatCell" in theme.value_cells(1, 9, 10, 0, 4)
+        assert "repeatCell" in theme.banner(1, 0, 6)
 
-    def test_no_merges_anywhere(self):
-        requests = theme.view_format_requests(
-            1, num_dimensions=2, metrics_meta=_meta(3, calc_indices=(2,)),
-            num_buckets=4, date_pattern="mmm-yyyy",
-        )
-        assert not any("mergeCells" in r for r in requests)
+    def test_periwinkle_col_tints_background(self):
+        req = theme.periwinkle_col(1, 9, 12, 3)
+        fmt = req["repeatCell"]["cell"]["userEnteredFormat"]
+        assert fmt["backgroundColor"] == theme.PERIWINKLE
+        assert req["repeatCell"]["fields"] == "userEnteredFormat.backgroundColor"
 
-    def test_borders_come_after_formats(self):
-        requests = theme.view_format_requests(
-            1, num_dimensions=1, metrics_meta=_meta(1), num_buckets=3,
-            date_pattern="d-mmm-yyyy",
-        )
-        last_format = max(i for i, r in enumerate(requests) if "repeatCell" in r)
-        first_border = min(i for i, r in enumerate(requests) if "updateBorders" in r)
-        assert first_border > last_format
+    def test_num_format_sets_number_pattern(self):
+        req = theme.num_format(1, 9, 12, 1, 2, "0%")
+        cell = req["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"]
+        assert cell["pattern"] == "0%"
 
-    def test_calc_column_gets_periwinkle(self):
-        requests = theme.view_format_requests(
-            1, num_dimensions=0, metrics_meta=_meta(2, calc_indices=(1,)),
-            num_buckets=2, date_pattern="d-mmm-yyyy",
-        )
-        fills = [
-            r["repeatCell"]["cell"]["userEnteredFormat"]["backgroundColor"]
-            for r in requests
-            if "repeatCell" in r
-            and r["repeatCell"]["fields"] == "userEnteredFormat.backgroundColor"
-        ]
-        assert theme.PERIWINKLE in fills
+    def test_outer_border_updates_borders(self):
+        assert "updateBorders" in theme.outer_border(1, 8, 12, 0, 4)
 
 
 class TestLineChart:
-    def test_line_chart_has_one_series_per_metric(self):
-        req = theme.line_chart_request(7, num_metrics=3, num_buckets=6)
+    def test_one_series_per_metric_column(self):
+        req = theme.line_chart_request(
+            7, metric_cols=[1, 3, 5], header_row_index=8, end_row_index=14,
+            anchor_col=7,
+        )
         chart = req["addChart"]["chart"]["spec"]["basicChart"]
         assert chart["chartType"] == "LINE"
         assert len(chart["series"]) == 3
+
+    def test_domain_is_period_column(self):
+        req = theme.line_chart_request(
+            7, metric_cols=[1], header_row_index=8, end_row_index=10, anchor_col=4,
+        )
+        domain = req["addChart"]["chart"]["spec"]["basicChart"]["domains"][0]
+        src = domain["domain"]["sourceRange"]["sources"][0]
+        assert src["startColumnIndex"] == 0 and src["endColumnIndex"] == 1

@@ -49,23 +49,28 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   the type (`metric`, `dimension`, or `date` - tag exactly one field `date`),
   column C is an optional `[Field]`-token formula for a calculated metric (for
   example `[Spend]/[Clicks]`), column D is a number-format hint
-  (`currency`, `percent`, `number`), and column E is a per-dimension **Show in
-  views** checkbox. Only dimensions with that box checked become filter
-  dropdowns in the daily/weekly/monthly views; an unchecked dimension stays in
-  the data but is hidden from the front end (metrics aggregate over all its
-  values). Raw fields must match a data_source header exactly; calculated
-  fields need not. Metrics and dimensions render in Setup row order, so a
-  calculated metric placed between two raw ones appears between them. Row 1 is
-  a header and is skipped.
+  (`currency`, `percent`, `number`), column E is a per-dimension **Show in
+  views** checkbox, and column F is a per-dimension **Break-out table**
+  checkbox. Only dimensions with Show checked become filter dropdowns; an
+  unchecked dimension stays in the data but is hidden (metrics aggregate over
+  all its values). A dimension with Break-out checked gets its own totals-per-
+  value table on every view; the two toggles are independent. Raw fields must
+  match a data_source header exactly; calculated fields need not. Metrics and
+  dimensions render in Setup row order, so a calculated metric placed between
+  two raw ones appears between them. Row 1 is a header and is skipped.
 - **data_source** (input) is the raw data. Row 1 is headers, row 2+ is data.
-- **mapping** (generated) has one column per dimension: row 1 the dimension
-  name, row 2 the `**` sentinel (meaning "All"), row 3+ the distinct values.
-- **daily / weekly / monthly** (generated) are the themed views. Each is a
-  bucket x metric matrix: a filter bar (one dropdown per dimension, default
-  `**`), a KPI strip of dimension-filtered grand totals, then one row per date
-  bucket (day / week / month) and one column per metric. Calculated-metric
-  columns are tinted periwinkle; the monthly view also carries a line chart of
-  every metric over time.
+- **mapping** (generated) has one column per dimension that is shown or broken
+  out: row 1 the dimension name, row 2 the `**` sentinel (meaning "All"), row
+  3+ the distinct values.
+- **daily / weekly / monthly** (generated) are the themed views, laid out as a
+  stack of blocks: a filter bar (one dropdown per shown dimension, default
+  `**`), a KPI strip of dimension-filtered grand totals, then a by-period
+  matrix (one row per date bucket, one column per metric; calculated-metric
+  columns tinted periwinkle). Weekly and monthly also carry a **compare block**
+  (two period pickers showing each metric's A, B, and % change) and a **% change
+  column** beside each metric in the matrix. Below that, each dimension flagged
+  for break-out gets a **totals-per-value table**. The monthly view also carries
+  a line chart of every metric over time.
 
 ## Actions
 

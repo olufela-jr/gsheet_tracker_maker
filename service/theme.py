@@ -8,9 +8,13 @@ without touching the domain logic.
 
 Everything in this module is a pure function that returns Google Sheets API
 batchUpdate request dicts. Nothing here talks to the network.
-"""
 
-from dataclasses import dataclass
+Views are laid out dynamically by tracker.build_view (a running row cursor over
+stacked blocks: filter bar, KPI strip, an optional compare block, the by-period
+matrix, then a break-out table per flagged dimension). tracker owns the row and
+column math; this module turns those positions into styled requests via the
+small public primitives below.
+"""
 
 
 def rgb(hex_str):
@@ -35,33 +39,6 @@ MUTED_TEXT = rgb("5F6368")
 HEADING_TEXT = rgb("202124")
 BORDER = rgb("BFBFBF")
 FONT = "Arial"
-
-
-# --- layout (1-based rows, 0-based columns) -------------------------------
-#
-# A view tab is a bucket x metric matrix. The period (bucket) runs down
-# column A; each metric is a column starting at B. A filter bar (one dropdown
-# per dimension) sits up top, and a KPI strip shows the dimension-filtered
-# grand total of every metric above the per-period matrix.
-
-
-@dataclass(frozen=True)
-class ViewLayout:
-    title_row: int = 1
-    filter_label_row: int = 3
-    filter_dropdown_row: int = 4
-    kpi_label_row: int = 6
-    kpi_value_row: int = 7
-    matrix_header_row: int = 9
-    matrix_first_data_row: int = 10
-
-
-VIEW_LAYOUT = ViewLayout()
-
-
-def metric_column(i):
-    """Grid column index (0-based) of metric i: A is the period, B is metric 0."""
-    return 1 + i
 
 
 # --- low level request builders -------------------------------------------
@@ -203,144 +180,111 @@ def _white_cell(sheet_id, r1, r2, c1, c2):
     )
 
 
-# --- the full view formatting pass ----------------------------------------
+# --- public formatting primitives -----------------------------------------
+#
+# tracker computes block positions, then calls these to style them. All take
+# 0-based, half-open row/column ranges (endRow / endCol exclusive), matching the
+# Sheets grid. The row/column math lives in tracker, not here. Apply borders
+# after fills: a repeatCell on userEnteredFormat would otherwise wipe a border.
 
 
-def view_format_requests(sheet_id, num_dimensions, metrics_meta, num_buckets, date_pattern):
-    """Return the ordered batchUpdate requests that theme one view tab.
+def hide_gridlines(sheet_id):
+    return _hide_gridlines(sheet_id)
 
-    metrics_meta is a list of (is_calc, number_pattern) in metric-column order.
-    Calculated-metric columns are tinted periwinkle to set them apart from raw
-    ones. Order matters: cell formats and number formats go in first, borders
-    last, because a repeatCell on userEnteredFormat fields would otherwise wipe
-    a border set earlier on the same cell. No cell is ever merged.
-    """
-    lay = VIEW_LAYOUT
-    num_metrics = len(metrics_meta)
-    last_col = 1 + num_metrics  # period col + one column per metric (exclusive)
-    banner_end_col = max(last_col, num_dimensions, 4)
-    canvas_end_col = max(banner_end_col, 8)
-    canvas_end_row = max(lay.matrix_first_data_row + num_buckets + 2, 20)
 
-    requests = [_hide_gridlines(sheet_id)]
-
-    # Page canvas: soft grey, Arial, near-black text.
-    requests.append(
-        _format(
-            sheet_id, 0, canvas_end_row, 0, canvas_end_col,
-            {"backgroundColor": PAGE_BG, "textFormat": _text(10, HEADING_TEXT)},
-            "userEnteredFormat(backgroundColor,textFormat)",
-        )
+def canvas(sheet_id, end_row, end_col):
+    """Soft-grey page background with Arial near-black text over the used area."""
+    return _format(
+        sheet_id, 0, end_row, 0, end_col,
+        {"backgroundColor": PAGE_BG, "textFormat": _text(10, HEADING_TEXT)},
+        "userEnteredFormat(backgroundColor,textFormat)",
     )
 
-    # Title banner: a navy bar (no merge) with white bold text.
-    title_r = lay.title_row - 1
-    requests.append(
-        _format(
-            sheet_id, title_r, title_r + 1, 0, banner_end_col,
-            {
-                "backgroundColor": BANNER_BG,
-                "textFormat": _text(16, BANNER_TEXT, bold=True),
-                "horizontalAlignment": "LEFT",
-                "verticalAlignment": "MIDDLE",
-                "padding": {"left": 16},
-            },
-            "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,padding)",
-        )
+
+def banner(sheet_id, row, end_col):
+    """A navy title bar (no merge) with white bold text on one row."""
+    return _format(
+        sheet_id, row, row + 1, 0, end_col,
+        {
+            "backgroundColor": BANNER_BG,
+            "textFormat": _text(16, BANNER_TEXT, bold=True),
+            "horizontalAlignment": "LEFT",
+            "verticalAlignment": "MIDDLE",
+            "padding": {"left": 16},
+        },
+        "userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment,padding)",
     )
 
-    # Filter captions (navy) over the dropdown input cells (white).
-    if num_dimensions:
-        label_r = lay.filter_label_row - 1
-        drop_r = lay.filter_dropdown_row - 1
-        requests.append(_navy_header(sheet_id, label_r, label_r + 1, 0, num_dimensions))
-        requests.append(_white_cell(sheet_id, drop_r, drop_r + 1, 0, num_dimensions))
 
-    # KPI strip: "Totals" plus a navy header per metric, white value cells below.
-    kpi_label_r = lay.kpi_label_row - 1
-    kpi_value_r = lay.kpi_value_row - 1
-    requests.append(_navy_header(sheet_id, kpi_label_r, kpi_label_r + 1, 0, last_col))
-    requests.append(_white_cell(sheet_id, kpi_value_r, kpi_value_r + 1, 0, last_col))
-    if num_metrics:
-        # KPI values are bold navy to read as headline numbers.
-        requests.append(
-            _format(
-                sheet_id, kpi_value_r, kpi_value_r + 1, 1, last_col,
-                {"textFormat": _text(11, ACCENT, bold=True)},
-                "userEnteredFormat.textFormat",
-            )
-        )
-
-    # Matrix header row ("Period" + metric names), navy.
-    header_r = lay.matrix_header_row - 1
-    requests.append(_navy_header(sheet_id, header_r, header_r + 1, 0, last_col))
-
-    # Matrix body: white cells, periwinkle for calculated-metric columns.
-    first = lay.matrix_first_data_row - 1
-    end = first + num_buckets
-    if num_buckets:
-        requests.append(_white_cell(sheet_id, first, end, 0, last_col))
-        for i, (is_calc, _pattern) in enumerate(metrics_meta):
-            if is_calc:
-                col = metric_column(i)
-                requests.append(
-                    _format(
-                        sheet_id, first, end, col, col + 1,
-                        {"backgroundColor": PERIWINKLE},
-                        "userEnteredFormat.backgroundColor",
-                    )
-                )
-        # Number formats: the period column as a date, each metric column and
-        # its KPI value cell with the metric's own pattern.
-        requests.append(_num_format(sheet_id, first, end, 0, 1, date_pattern))
-        for i, (_is_calc, pattern) in enumerate(metrics_meta):
-            col = metric_column(i)
-            requests.append(_num_format(sheet_id, first, end, col, col + 1, pattern))
-            requests.append(_num_format(sheet_id, kpi_value_r, kpi_value_r + 1, col, col + 1, pattern))
-
-    # Column widths and a couple of row heights.
-    requests.append(_col_width(sheet_id, 0, 1, 130))
-    if num_metrics:
-        requests.append(_col_width(sheet_id, 1, last_col, 120))
-    requests.append(_row_height(sheet_id, title_r, 48))
-
-    # Borders last so the cell-format pass above does not clear them.
-    requests.append(_outer_border(sheet_id, kpi_label_r, kpi_value_r + 1, 0, last_col))
-    if num_buckets:
-        requests.append(_outer_border(sheet_id, header_r, end, 0, last_col))
-    if num_dimensions:
-        drop_r = lay.filter_dropdown_row - 1
-        requests.append(
-            _outer_border(sheet_id, lay.filter_label_row - 1, drop_r + 1, 0, num_dimensions)
-        )
-
-    return requests
+def section_title(sheet_id, row, end_col):
+    """A bold navy caption over a by-period / compare / break-out section."""
+    return _format(
+        sheet_id, row, row + 1, 0, end_col,
+        {"textFormat": _text(11, ACCENT, bold=True)},
+        "userEnteredFormat.textFormat",
+    )
 
 
-def line_chart_request(sheet_id, num_metrics, num_buckets, title="Monthly trend"):
+def header_row(sheet_id, row, c1, c2):
+    """A navy header run (one row)."""
+    return _navy_header(sheet_id, row, row + 1, c1, c2)
+
+
+def value_cells(sheet_id, r1, r2, c1, c2):
+    """A white value-cell block."""
+    return _white_cell(sheet_id, r1, r2, c1, c2)
+
+
+def kpi_values(sheet_id, row, c1, c2):
+    """Bold navy value cells that read as headline numbers."""
+    return _format(
+        sheet_id, row, row + 1, c1, c2,
+        {"textFormat": _text(11, ACCENT, bold=True)},
+        "userEnteredFormat.textFormat",
+    )
+
+
+def periwinkle_col(sheet_id, r1, r2, col):
+    """Tint one column periwinkle to mark a calculated-metric column."""
+    return _format(
+        sheet_id, r1, r2, col, col + 1,
+        {"backgroundColor": PERIWINKLE},
+        "userEnteredFormat.backgroundColor",
+    )
+
+
+def num_format(sheet_id, r1, r2, c1, c2, pattern):
+    return _num_format(sheet_id, r1, r2, c1, c2, pattern)
+
+
+def outer_border(sheet_id, r1, r2, c1, c2):
+    return _outer_border(sheet_id, r1, r2, c1, c2)
+
+
+def col_width(sheet_id, start, end, px):
+    return _col_width(sheet_id, start, end, px)
+
+
+def row_height(sheet_id, row, px):
+    return _row_height(sheet_id, row, px)
+
+
+def line_chart_request(sheet_id, metric_cols, header_row_index, end_row_index,
+                       anchor_col, title="Trend"):
     """An addChart request: a line per metric over the period column.
 
-    Domain is column A (the bucket dates); each metric column B.. is a series.
-    The header row is included and headerCount=1 so series take their names
-    from the matrix header. The chart is anchored to the right of the matrix.
+    metric_cols are the 0-based grid columns of the metric VALUE cells (any
+    delta columns are skipped). Domain is column A; series names come from the
+    header row (headerCount=1). Rows span header_row_index..end_row_index
+    (exclusive). The chart anchors at anchor_col, past the table.
     """
-    lay = VIEW_LAYOUT
-    header = lay.matrix_header_row - 1  # include header row for series names
-    end = (lay.matrix_first_data_row - 1) + num_buckets
-
     def source(col_start, col_end):
-        return {
-            "sources": [_grid(sheet_id, header, end, col_start, col_end)]
-        }
+        return {"sources": [_grid(sheet_id, header_row_index, end_row_index, col_start, col_end)]}
 
     series = [
-        {
-            "series": {"sourceRange": source(metric_column(i), metric_column(i) + 1)},
-            "targetAxis": "LEFT_AXIS",
-        }
-        for i in range(num_metrics)
+        {"series": {"sourceRange": source(col, col + 1)}, "targetAxis": "LEFT_AXIS"}
+        for col in metric_cols
     ]
-    anchor_col = 1 + num_metrics + 1  # one blank column past the last metric
     return {
         "addChart": {
             "chart": {
@@ -350,9 +294,7 @@ def line_chart_request(sheet_id, num_metrics, num_buckets, title="Monthly trend"
                         "chartType": "LINE",
                         "legendPosition": "BOTTOM_LEGEND",
                         "headerCount": 1,
-                        "domains": [
-                            {"domain": {"sourceRange": source(0, 1)}}
-                        ],
+                        "domains": [{"domain": {"sourceRange": source(0, 1)}}],
                         "series": series,
                     },
                 },
@@ -360,7 +302,7 @@ def line_chart_request(sheet_id, num_metrics, num_buckets, title="Monthly trend"
                     "overlayPosition": {
                         "anchorCell": {
                             "sheetId": sheet_id,
-                            "rowIndex": header,
+                            "rowIndex": header_row_index,
                             "columnIndex": anchor_col,
                         }
                     }
@@ -401,7 +343,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
     if setup_sheet_id is not None:
         requests.append(
             _format(
-                setup_sheet_id, 0, 1, 0, 5,
+                setup_sheet_id, 0, 1, 0, 6,
                 {"backgroundColor": BANNER_BG, "textFormat": _text(10, BANNER_TEXT, bold=True)},
                 "userEnteredFormat(backgroundColor,textFormat)",
             )
@@ -409,7 +351,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(_freeze_header(setup_sheet_id))
         requests.append(_col_width(setup_sheet_id, 0, 1, 220))
         requests.append(_col_width(setup_sheet_id, 1, 2, 120))
-        requests.append(_col_width(setup_sheet_id, 4, 5, 120))
+        requests.append(_col_width(setup_sheet_id, 4, 6, 120))
         requests.append(
             _note(setup_sheet_id, 0, 0, "Field must exactly match a header in data_source.")
         )
@@ -421,11 +363,18 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                 "the daily/weekly/monthly views. Blank = hidden from the views.",
             )
         )
-        # Checkboxes down the Show column so the toggle is obvious.
+        requests.append(
+            _note(
+                setup_sheet_id, 0, 5,
+                "Dimensions only: check to add a break-out table (totals per "
+                "value of this dimension) to every view. Independent of Show.",
+            )
+        )
+        # Checkboxes down the Show and Break-out columns so the toggles are obvious.
         requests.append(
             {
                 "setDataValidation": {
-                    "range": _grid(setup_sheet_id, 1, 1000, 4, 5),
+                    "range": _grid(setup_sheet_id, 1, 1000, 4, 6),
                     "rule": {
                         "condition": {"type": "BOOLEAN"},
                         "showCustomUi": True,

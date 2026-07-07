@@ -9,15 +9,16 @@ from tracker import build_view, build_views, date_to_serial
 class FakeClient:
     """A fake covering the client surface build_view touches.
 
-    Serves setup rows, data_source headers, and the date column (as serials);
-    records batch writes and batch updates for assertions.
+    Serves setup rows, data_source headers, the date column (as serials), and
+    optionally Mapping rows; records batch writes and updates for assertions.
     """
 
-    def __init__(self, setup_rows, headers, date_serials, tabs):
+    def __init__(self, setup_rows, headers, date_serials, tabs, mapping_rows=None):
         self._setup = setup_rows
         self._headers = headers
         self._date_serials = date_serials
         self._tabs = dict(tabs)  # title -> sheetId
+        self._mapping = mapping_rows or []
         self.spreadsheet_id = "SHEET"
         self.raw_writes = []
         self.formula_writes = []
@@ -30,6 +31,8 @@ class FakeClient:
         low = a1_range.lower()
         if "setup" in low:
             return self._setup
+        if "mapping" in low:
+            return self._mapping
         if "data_source" in low and "1:1" in a1_range:
             return [self._headers]
         if "data_source" in low:
@@ -69,14 +72,17 @@ class FakeClient:
                 return w["values"]
         return None
 
+    def _has_raw(self, value):
+        return any(w["values"] == value for w in self.raw_writes)
 
-def _client(granularity_tab):
+
+def _client(granularity_tab, region_breakout=""):
     setup = [
-        ["Day", "date", "", "", ""],
-        ["Region", "dimension", "", "", "TRUE"],
-        ["Spend", "metric", "", "currency", ""],
-        ["Clicks", "metric", "", "number", ""],
-        ["CPC", "metric", "[Spend]/[Clicks]", "currency", ""],
+        ["Day", "date", "", "", "", ""],
+        ["Region", "dimension", "", "", "TRUE", region_breakout],
+        ["Spend", "metric", "", "currency", "", ""],
+        ["Clicks", "metric", "", "number", "", ""],
+        ["CPC", "metric", "[Spend]/[Clicks]", "currency", "", ""],
     ]
     headers = ["Day", "Region", "Spend", "Clicks"]
     serials = [
@@ -84,12 +90,9 @@ def _client(granularity_tab):
         date_to_serial(date(2025, 8, 5)),
         date_to_serial(date(2025, 9, 1)),
     ]
-    tabs = {
-        "setup": 1,
-        "data_source": 2,
-        granularity_tab: 3,
-    }
-    return FakeClient(setup, headers, serials, tabs)
+    tabs = {"setup": 1, "data_source": 2, granularity_tab: 3}
+    mapping = [["Region"], ["**"], ["North"], ["South"]]
+    return FakeClient(setup, headers, serials, tabs, mapping_rows=mapping)
 
 
 class TestBuildView:
@@ -110,41 +113,67 @@ class TestBuildView:
         assert grand[2].startswith('=IFERROR(SUMIFS(Spend')
         assert "/SUMIFS(Clicks" in grand[2]
 
-        # Matrix formulas reference the per-row period cell with EOMONTH bounds.
-        matrix = client._find_write(client.formula_writes, "B10")
+        # Main matrix sits below the compare block; monthly bounds use EOMONTH.
+        matrix = client._find_write(client.formula_writes, "B18")
         assert len(matrix) == 2  # one row per bucket
-        assert "EOMONTH(A10,0)" in matrix[0][0]
+        assert "EOMONTH(A18,0)" in matrix[0][0]
         assert matrix[1][0].startswith("=SUMIFS(Spend")
+
+    def test_monthly_has_compare_block_and_delta_columns(self):
+        client = _client(DEFAULT_CONFIG.monthly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        # Compare header row.
+        assert client._has_raw([["Metric", "Period A", "Period B", "Change"]])
+        # Compare change formula for the first metric.
+        cmp = client._find_write(client.formula_writes, "B11")
+        assert 'IFERROR((C11-B11)/B11' in cmp[0][2]
+        # Main header carries a change column beside each metric.
+        header = client._find_write(client.raw_writes, "A17")[0]
+        assert header.count("change %") == 3
+        # Delta cell references the value cell above it.
+        matrix = client._find_write(client.formula_writes, "B18")
+        assert matrix[0][1] == ""  # first bucket has no previous
+        assert "IFERROR((B19-B18)/B18" in matrix[1][1]
 
     def test_monthly_adds_a_chart(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
-        added = [
-            r
-            for batch in client.batch_updates
-            for r in batch
-            if "addChart" in r
-        ]
+        added = [r for batch in client.batch_updates for r in batch if "addChart" in r]
         assert len(added) == 1
 
-    def test_daily_no_chart_and_day_bounds(self):
+    def test_daily_no_chart_no_compare_and_day_bounds(self):
         client = _client(DEFAULT_CONFIG.daily_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
-        added = [
-            r
-            for batch in client.batch_updates
-            for r in batch
-            if "addChart" in r
-        ]
+        added = [r for batch in client.batch_updates for r in batch if "addChart" in r]
         assert added == []
-        matrix = client._find_write(client.formula_writes, "B10")
-        assert "(A10+1)" in matrix[0][0]
+        # No compare block on daily.
+        assert not client._has_raw([["Metric", "Period A", "Period B", "Change"]])
+        # Main table starts higher (no compare block) and has no delta columns.
+        header = client._find_write(client.raw_writes, "A10")[0]
+        assert header == ["Period", "Spend", "Clicks", "CPC"]
+        matrix = client._find_write(client.formula_writes, "B11")
+        assert "(A11+1)" in matrix[0][0]
 
     def test_dropdown_seeded_with_sentinel(self):
         client = _client(DEFAULT_CONFIG.weekly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         drop = client._find_write(client.raw_writes, "A4")
         assert drop == [[DEFAULT_CONFIG.sentinel]]  # one dimension: Region
+
+    def test_breakout_table_rendered(self):
+        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="TRUE")
+        result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert result["breakouts"] == ["Region"]
+        # "By Region" break-out header: dimension name then the metrics.
+        assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
+        # Its values come from the Mapping tab.
+        assert client._has_raw([["North"], ["South"]])
+        # A break-out cell pins the dimension to the row's value label.
+        breakout = [
+            w for w in client.formula_writes
+            if w["values"] and "SUMIFS(Spend, Region, A" in str(w["values"][0][0])
+        ]
+        assert breakout
 
 
 class TestBuildViews:
