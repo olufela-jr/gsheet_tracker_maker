@@ -69,8 +69,16 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   columns tinted periwinkle). Weekly and monthly also carry a **compare block**
   (two period pickers showing each metric's A, B, and % change) and a **% change
   column** beside each metric in the matrix. Below that, each dimension flagged
-  for break-out gets a **totals-per-value table**. The monthly view also carries
-  a line chart of every metric over time.
+  for break-out gets a **totals-per-value table** (capped at 50 values, with the
+  cap shown in the title). The monthly view also carries a line chart of every
+  metric over time.
+- **comparison** (generated) is a split-screen A/B tab. Each side has a dropdown
+  per shown dimension and its own Date from / Date to, so you can compare two
+  campaigns (or channels, regions, ...) over the same or different ranges. A
+  table shows each metric's total per side plus the % difference, and a metric
+  picker + day/week/month granularity picker drive a trend chart that plots the
+  chosen metric for both sides, aligned by period index from each start date so
+  unequal ranges still line up.
 
 ## Actions
 

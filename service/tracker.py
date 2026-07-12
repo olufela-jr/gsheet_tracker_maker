@@ -173,15 +173,52 @@ def bucket_sumifs_expr(metric_range, date_range, bucket_cell, granularity, dims,
     return "SUMIFS({})".format(", ".join(parts))
 
 
-def build_calc_formula(formula, resolve):
-    """Substitute [Field] tokens with expressions and wrap in IFERROR.
+def calc_expr(formula, resolve):
+    """The calc expression wrapped in IFERROR, without a leading '='.
 
     resolve(name) returns the SUMIFS expression for a raw field in the current
-    context (a bucket or a grand total). IFERROR turns divide-by-zero into a
-    blank rather than #DIV/0!.
+    context. Returned bare so it can be embedded (e.g. inside a CHOOSE arm on
+    the comparison tab); build_calc_formula just prefixes '='.
     """
     substituted = _TOKEN_RE.sub(lambda m: resolve(m.group(1).strip()), formula)
-    return '=IFERROR({}, "")'.format(substituted)
+    return 'IFERROR({}, "")'.format(substituted)
+
+
+def build_calc_formula(formula, resolve):
+    """A calculated-metric cell formula: substitute [Field] tokens, wrap IFERROR.
+
+    IFERROR turns divide-by-zero into a blank rather than #DIV/0!.
+    """
+    return "=" + calc_expr(formula, resolve)
+
+
+def _sumifs_between(metric_range, date_range, lower, upper, dim_specs, sentinel):
+    """SUMIFS for a raw metric between two date-criteria strings, dropdown-filtered.
+
+    lower / upper are full criteria strings, e.g. '">="&B5' and '"<"&(C5+1)'.
+    """
+    parts = [metric_range, date_range, lower, date_range, upper]
+    for dim_range, cell in dim_specs:
+        parts.append(dim_range)
+        parts.append('IF({c}="{s}","<>",{c})'.format(c=cell, s=sentinel))
+    return "SUMIFS({})".format(", ".join(parts))
+
+
+def _between_expr(metric, date_range, lower, upper, dim_specs, sentinel):
+    """Bare expression (no '=') for a metric over a date window; calc-aware."""
+    if metric.formula:
+        return calc_expr(
+            metric.formula,
+            lambda n: _sumifs_between(sanitise_name(n), date_range, lower, upper,
+                                      dim_specs, sentinel),
+        )
+    return _sumifs_between(sanitise_name(metric.name), date_range, lower, upper,
+                           dim_specs, sentinel)
+
+
+def _between_formula(metric, date_range, lower, upper, dim_specs, sentinel):
+    """Cell formula ('=' + expr) for a metric over a date window; calc-aware."""
+    return "=" + _between_expr(metric, date_range, lower, upper, dim_specs, sentinel)
 
 
 # --- number formats --------------------------------------------------------
@@ -191,6 +228,12 @@ DATE_FORMAT = "d-mmm-yyyy"
 MONTH_FORMAT = "mmm-yyyy"
 # Signed percent for period-on-period deltas: +40% / -12% / 0%.
 DELTA_FORMAT = "+0%;-0%;0%"
+# Most values a single break-out table renders, so a high-cardinality dimension
+# cannot stack thousands of rows. The cap is shown in the table title.
+MAX_BREAKOUT_VALUES = 50
+# Rows in the Comparison tab's trend helper: the most periods a side's date
+# range can chart (e.g. 52 weeks). Beyond this the trend line simply stops.
+COMPARISON_PERIODS = 52
 
 
 def number_format_pattern(fmt):
@@ -608,6 +651,23 @@ def _one_of_range(sheet_id, row0, col0, source):
     }
 
 
+def _one_of_list(sheet_id, row0, col0, values):
+    """A ONE_OF_LIST dropdown on a single cell, from a fixed list of values."""
+    return {
+        "setDataValidation": {
+            "range": _grid_dv(sheet_id, row0, row0 + 1, col0, col0 + 1),
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [{"userEnteredValue": v} for v in values],
+                },
+                "showCustomUi": True,
+                "strict": False,
+            },
+        }
+    }
+
+
 def build_view(client, cfg, tab, granularity, fields=None, headers=None,
                serials=None, breakout_values=None):
     """Build one themed view tab as a stack of blocks.
@@ -776,14 +836,21 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
     # ---- Break-out tables ------------------------------------------------
     breakout_blocks = []
     for bd in breakouts:
-        vals = breakout_values.get(bd, [])
+        all_vals = breakout_values.get(bd, [])
+        # Cap high-cardinality dimensions so one break-out cannot push a table
+        # thousands of rows tall; the cap is surfaced, never silent.
+        vals = all_vals[:MAX_BREAKOUT_VALUES]
+        truncated = len(all_vals) > MAX_BREAKOUT_VALUES
         bd_range = sanitise_name(bd)
         other_specs = [spec for dim, spec in zip(dimensions, dim_specs) if dim != bd]
+        title = "By {}".format(bd)
+        if truncated:
+            title += "  (first {} of {})".format(MAX_BREAKOUT_VALUES, len(all_vals))
         bo_title_row = row
         bo_header_row = row + 1
         bo_first_data = row + 2
         raw_data.append({"range": a1(tab, "A{}".format(bo_title_row)),
-                         "values": [["By {}".format(bd)]]})
+                         "values": [[title]]})
         raw_data.append({"range": a1(tab, "A{}".format(bo_header_row)),
                          "values": [[bd] + metric_names]})
         if vals:
@@ -917,12 +984,282 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
     }
 
 
+def build_comparison(client, cfg, fields=None, headers=None, serials=None):
+    """Build the split-screen Comparison tab.
+
+    Two independent panels (Side A / Side B), each with a dropdown per shown
+    dimension and its own Date from / Date to, so you can compare specific
+    campaigns (or campaign types, regions, ...) over the same or different date
+    ranges. A metrics table shows each metric's total per side plus the %
+    difference. A metric picker and a day/week/month granularity picker drive a
+    trend chart that plots the chosen metric for both sides, aligned by period
+    index from each side's start date (so unequal date ranges still compare).
+    """
+    if fields is None:
+        fields = read_setup(client, cfg)
+    if headers is None:
+        headers = read_data_source_headers(client, cfg)
+    metric_fields = [f for f in fields if f.type == "metric"]
+    dimensions = dimensions_of(fields)
+    mapping_dims = mapping_dimensions_of(fields)
+    date_name = date_field_of(fields)
+    if date_name is None:
+        raise ValidationError(
+            ["No single date field is declared, so no comparison can be built."]
+        )
+
+    sentinel = cfg.sentinel
+    date_range = sanitise_name(date_name)
+    metric_names = [m.name for m in metric_fields]
+    ndim = len(dimensions)
+    tab = cfg.comparison_tab
+
+    if serials is None:
+        serials = _read_date_serials(client, cfg, date_name, headers)
+    numeric = [int(float(s)) for s in serials
+               if isinstance(s, (int, float)) or str(s).replace(".", "", 1).isdigit()]
+    default_from = min(numeric) if numeric else ""
+    default_to = max(numeric) if numeric else ""
+
+    ensure_tab(client, tab)
+    sheet_id = client.get_sheet_id(tab)
+    client.clear_range(tab)
+
+    raw_data = []
+    formula_data = []
+    fmt = [theme.hide_gridlines(sheet_id)]
+
+    # ---- Row plan --------------------------------------------------------
+    header_row = 3                       # "SIDE A" / "SIDE B"
+    first_dim_row = 4
+    from_row = first_dim_row + ndim
+    to_row = from_row + 1
+    read_header_row = to_row + 2         # Metric | Side A | Side B | % diff
+    read_first_row = read_header_row + 1
+    read_last_row = read_first_row + len(metric_fields) - 1
+    controls_row = read_last_row + 2     # metric picker + granularity picker
+    trend_title_row = controls_row + 2
+    chart_anchor_row = trend_title_row   # 1-based; chart overlays here
+
+    # Helper (chart-data) block far to the right: P index, per-side start/end,
+    # and the picked metric's value per side. Left visible; users rarely scroll.
+    HP = 8  # column H (0-based 7) is the first helper column
+    hp_header_row = header_row
+    hp_first_row = hp_header_row + 1
+
+    # ---- Title + side headers -------------------------------------------
+    raw_data.append({"range": a1(tab, "A1"),
+                     "values": [["{} - Comparison".format(cfg.frontend_title)]]})
+    raw_data.append({"range": a1(tab, "A{}".format(header_row)), "values": [["SIDE A"]]})
+    raw_data.append({"range": a1(tab, "D{}".format(header_row)), "values": [["SIDE B"]]})
+
+    # ---- Filters + date range per side ----------------------------------
+    specs_a_rel, specs_b_rel = [], []
+    specs_a_abs, specs_b_abs = [], []
+    for i, dim in enumerate(dimensions):
+        r = first_dim_row + i
+        raw_data.append({"range": a1(tab, "A{}".format(r)), "values": [[dim, sentinel]]})
+        raw_data.append({"range": a1(tab, "D{}".format(r)), "values": [[dim, sentinel]]})
+        rng = sanitise_name(dim)
+        specs_a_rel.append((rng, "B{}".format(r)))
+        specs_b_rel.append((rng, "E{}".format(r)))
+        specs_a_abs.append((rng, "$B${}".format(r)))
+        specs_b_abs.append((rng, "$E${}".format(r)))
+
+    raw_data.append({"range": a1(tab, "A{}".format(from_row)),
+                     "values": [["Date from", default_from]]})
+    raw_data.append({"range": a1(tab, "D{}".format(from_row)),
+                     "values": [["Date from", default_from]]})
+    raw_data.append({"range": a1(tab, "A{}".format(to_row)),
+                     "values": [["Date to", default_to]]})
+    raw_data.append({"range": a1(tab, "D{}".format(to_row)),
+                     "values": [["Date to", default_to]]})
+
+    fa, ta = "B{}".format(from_row), "B{}".format(to_row)
+    fb, tb = "E{}".format(from_row), "E{}".format(to_row)
+
+    # ---- Metrics comparison table ---------------------------------------
+    raw_data.append({"range": a1(tab, "A{}".format(read_header_row)),
+                     "values": [["Metric", "Side A", "Side B", "% diff"]]})
+    if metric_fields:
+        raw_data.append({"range": a1(tab, "A{}".format(read_first_row)),
+                         "values": [[name] for name in metric_names]})
+        rows = []
+        for i, m in enumerate(metric_fields):
+            rr = read_first_row + i
+            a_total = _between_formula(
+                m, date_range, '">="&{}'.format(fa), '"<"&({}+1)'.format(ta),
+                specs_a_rel, sentinel)
+            b_total = _between_formula(
+                m, date_range, '">="&{}'.format(fb), '"<"&({}+1)'.format(tb),
+                specs_b_rel, sentinel)
+            diff = '=IFERROR((C{r}-B{r})/B{r}, "")'.format(r=rr)
+            rows.append([a_total, b_total, diff])
+        formula_data.append({"range": a1(tab, "B{}".format(read_first_row)), "values": rows})
+
+    # ---- Controls: metric picker + granularity picker -------------------
+    raw_data.append({"range": a1(tab, "A{}".format(controls_row)),
+                     "values": [["Metric to chart",
+                                 metric_names[0] if metric_names else "",
+                                 "", "Granularity", "week"]]})
+    mp = "$B${}".format(controls_row)   # metric picker
+    gp = "$E${}".format(controls_row)   # granularity picker
+
+    raw_data.append({"range": a1(tab, "A{}".format(trend_title_row)),
+                     "values": [["Trend (aligned by period index from each start date)"]]})
+
+    # ---- Helper block that feeds the trend chart ------------------------
+    # Columns: H index, I/J side-A start/end, K side-A value, L/M side-B
+    # start/end, N side-B value. The value columns surface the picked metric.
+    def hcol(offset):
+        return column_to_letter(HP + offset)  # HP=8 -> H
+
+    raw_data.append({
+        "range": a1(tab, "{}{}".format(hcol(0), hp_header_row)),
+        "values": [["P", "A start", "A end", "Side A", "B start", "B end", "Side B"]],
+    })
+    idx_col = column_to_letter(HP)         # H
+    a_start_col = column_to_letter(HP + 1)  # I
+    a_end_col = column_to_letter(HP + 2)    # J
+    b_start_col = column_to_letter(HP + 4)  # L
+    b_end_col = column_to_letter(HP + 5)    # M
+
+    if metric_names:
+        arr = "{" + ";".join('"{}"'.format(n) for n in metric_names) + "}"
+
+        def start_formula(from_cell, r):
+            return ('=IF({fa}="","",IF({g}="day",{fa}+({ix}{r}-1),'
+                    'IF({g}="week",{fa}+({ix}{r}-1)*7,EDATE({fa},{ix}{r}-1))))').format(
+                        fa=from_cell, g=gp, ix=idx_col, r=r)
+
+        def end_formula(start_ref, r):
+            return ('=IF({s}="","",IF({g}="day",{s}+1,'
+                    'IF({g}="week",{s}+7,EDATE({s},1))))').format(
+                        s="{}{}".format(start_ref, r), g=gp)
+
+        def value_formula(start_ref, end_ref, to_cell, specs, r):
+            lower = '">="&{}{}'.format(start_ref, r)
+            upper = '"<"&{}{}'.format(end_ref, r)
+            exprs = ",".join(
+                _between_expr(m, date_range, lower, upper, specs, sentinel)
+                for m in metric_fields)
+            return ('=IF(OR({s}{r}="",{s}{r}>{to}),"",'
+                    'CHOOSE(MATCH({mp},{arr},0),{exprs}))').format(
+                        s=start_ref, r=r, to=to_cell, mp=mp, arr=arr, exprs=exprs)
+
+        helper = []
+        for k in range(COMPARISON_PERIODS):
+            r = hp_first_row + k
+            helper.append([
+                k + 1,
+                start_formula(fa, r),
+                end_formula(a_start_col, r),
+                value_formula(a_start_col, a_end_col, ta, specs_a_abs, r),
+                start_formula(fb, r),
+                end_formula(b_start_col, r),
+                value_formula(b_start_col, b_end_col, tb, specs_b_abs, r),
+            ])
+        # The index column is a plain value; the rest are formulas. Writing the
+        # whole block as USER_ENTERED lets the integers and formulas coexist.
+        formula_data.append({
+            "range": a1(tab, "{}{}".format(idx_col, hp_first_row)),
+            "values": helper,
+        })
+
+    client.batch_write_values(raw_data, value_input_option="RAW")
+    if formula_data:
+        client.batch_write_values(formula_data, value_input_option="USER_ENTERED")
+
+    # ---- Formatting ------------------------------------------------------
+    metrics_meta = [(bool(m.formula), number_format_pattern(m.fmt)) for m in metric_fields]
+    date_pattern = DATE_FORMAT
+    end_row = hp_first_row + COMPARISON_PERIODS + 2
+    end_col = HP + 7
+
+    fmt.append(theme.canvas(sheet_id, end_row, end_col))
+    fmt.append(theme.banner(sheet_id, 0, 5))
+    fmt.append(theme.row_height(sheet_id, 0, 48))
+    fmt.append(theme.col_width(sheet_id, 0, 1, 130))
+    fmt.append(theme.col_width(sheet_id, 1, 2, 150))
+    fmt.append(theme.col_width(sheet_id, 3, 4, 130))
+    fmt.append(theme.col_width(sheet_id, 4, 5, 150))
+
+    # Side headers + input cells.
+    fmt.append(theme.header_row(sheet_id, header_row - 1, 0, 2))
+    fmt.append(theme.header_row(sheet_id, header_row - 1, 3, 5))
+    # Input cells (dimension dropdowns + the two date cells) on each side.
+    fmt.append(theme.value_cells(sheet_id, first_dim_row - 1, to_row, 1, 2))
+    fmt.append(theme.value_cells(sheet_id, first_dim_row - 1, to_row, 4, 5))
+    fmt.append(theme.num_format(sheet_id, from_row - 1, to_row, 1, 2, date_pattern))
+    fmt.append(theme.num_format(sheet_id, from_row - 1, to_row, 4, 5, date_pattern))
+    fmt.append(theme.outer_border(sheet_id, header_row - 1, to_row, 0, 2))
+    fmt.append(theme.outer_border(sheet_id, header_row - 1, to_row, 3, 5))
+
+    # Metrics comparison table.
+    fmt.append(theme.header_row(sheet_id, read_header_row - 1, 0, 4))
+    if metric_fields:
+        fmt.append(theme.value_cells(sheet_id, read_first_row - 1, read_last_row, 0, 4))
+        for i, (_is_calc, pattern) in enumerate(metrics_meta):
+            rr = read_first_row - 1 + i
+            fmt.append(theme.num_format(sheet_id, rr, rr + 1, 1, 3, pattern))
+        fmt.append(theme.num_format(sheet_id, read_first_row - 1, read_last_row, 3, 4, DELTA_FORMAT))
+        fmt.append(theme.outer_border(sheet_id, read_header_row - 1, read_last_row, 0, 4))
+
+    # Controls + trend title.
+    fmt.append(theme.section_title(sheet_id, controls_row - 1, 5))
+    fmt.append(theme.value_cells(sheet_id, controls_row - 1, controls_row, 1, 2))
+    fmt.append(theme.value_cells(sheet_id, controls_row - 1, controls_row, 4, 5))
+    fmt.append(theme.section_title(sheet_id, trend_title_row - 1, 8))
+    # Helper header (navy) so the chart data reads as a labelled block. HP is a
+    # 1-based column number (H); grid indices are 0-based, so H is HP - 1.
+    fmt.append(theme.header_row(sheet_id, hp_header_row - 1, HP - 1, HP + 6))
+
+    # ---- Data validations -----------------------------------------------
+    fmt.append({"setDataValidation": {"range": _grid_dv(sheet_id, 0, end_row, 0, end_col)}})
+    for i, dim in enumerate(dimensions):
+        map_col = column_to_letter(mapping_dims.index(dim) + 1)
+        source = "=" + a1(cfg.mapping_tab, "{c}2:{c}".format(c=map_col))
+        r0 = first_dim_row - 1 + i
+        fmt.append(_one_of_range(sheet_id, r0, 1, source))  # side A dropdown (B)
+        fmt.append(_one_of_range(sheet_id, r0, 4, source))  # side B dropdown (E)
+    if metric_names:
+        fmt.append(_one_of_list(sheet_id, controls_row - 1, 1, metric_names))
+    fmt.append(_one_of_list(sheet_id, controls_row - 1, 4, ["day", "week", "month"]))
+
+    for chart_id in _existing_chart_ids(client, sheet_id):
+        fmt.append({"deleteEmbeddedObject": {"objectId": chart_id}})
+
+    client.batch_update(fmt)
+
+    # Trend chart in its own batch (references the helper block just written).
+    # 0-based grid columns: H (domain) is HP-1, K (Side A value) HP+2, N (Side B
+    # value) HP+5.
+    if metric_names:
+        header_idx = hp_header_row - 1
+        end_idx = (hp_first_row - 1) + COMPARISON_PERIODS
+        client.batch_update([
+            theme.line_chart_request(
+                sheet_id, [HP + 2, HP + 5], header_idx, end_idx, 0,
+                title="Trend by period index",
+                domain_col=HP - 1, anchor_row=chart_anchor_row,
+            )
+        ])
+
+    return {
+        "tab": tab,
+        "metrics": metric_names,
+        "dimensions": dimensions,
+        "periods": COMPARISON_PERIODS,
+    }
+
+
+
 def build_views(client, cfg):
-    """Build all three view tabs (daily, weekly, monthly).
+    """Build the three period views plus the Comparison tab.
 
     Setup fields, data_source headers, the date column, and (when any dimension
     is broken out) the Mapping values are read once here and passed to each
-    view, so building three views stays a few reads, not several per view.
+    view, so building everything stays a few reads, not several per tab.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)
@@ -935,10 +1272,12 @@ def build_views(client, cfg):
         if breakout_dimensions_of(fields)
         else {}
     )
-    return [
+    results = [
         build_view(client, cfg, tab, granularity, fields, headers, serials, breakout_values)
         for tab, granularity in view_specs(cfg)
     ]
+    results.append(build_comparison(client, cfg, fields, headers, serials))
+    return results
 
 
 

@@ -19,6 +19,7 @@ MAPPING_TAB = "mapping"
 DAILY_TAB = "daily"
 WEEKLY_TAB = "weekly"
 MONTHLY_TAB = "monthly"
+COMPARISON_TAB = "comparison"
 
 # The sentinel written into Mapping row 2 and used as the Frontend dropdown
 # default. It means "All" (no filter on this dimension).
@@ -53,6 +54,7 @@ class Config:
     daily_tab: str = DAILY_TAB
     weekly_tab: str = WEEKLY_TAB
     monthly_tab: str = MONTHLY_TAB
+    comparison_tab: str = COMPARISON_TAB
     sentinel: str = SENTINEL
     frontend_title: str = FRONTEND_TITLE
     bigquery_project: str = BIGQUERY_PROJECT

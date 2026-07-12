@@ -270,13 +270,15 @@ def row_height(sheet_id, row, px):
 
 
 def line_chart_request(sheet_id, metric_cols, header_row_index, end_row_index,
-                       anchor_col, title="Trend"):
-    """An addChart request: a line per metric over the period column.
+                       anchor_col, title="Trend", domain_col=0, anchor_row=None):
+    """An addChart request: a line per series column over a domain column.
 
-    metric_cols are the 0-based grid columns of the metric VALUE cells (any
-    delta columns are skipped). Domain is column A; series names come from the
-    header row (headerCount=1). Rows span header_row_index..end_row_index
-    (exclusive). The chart anchors at anchor_col, past the table.
+    metric_cols are the 0-based grid columns of the series VALUE cells (any
+    delta columns are skipped). domain_col is the 0-based domain column (the
+    period column A for the views; the period-index column on the comparison
+    tab). Series names come from the header row (headerCount=1). Rows span
+    header_row_index..end_row_index (exclusive). The chart anchors at
+    anchor_row / anchor_col (anchor_row defaults to the header row).
     """
     def source(col_start, col_end):
         return {"sources": [_grid(sheet_id, header_row_index, end_row_index, col_start, col_end)]}
@@ -294,7 +296,7 @@ def line_chart_request(sheet_id, metric_cols, header_row_index, end_row_index,
                         "chartType": "LINE",
                         "legendPosition": "BOTTOM_LEGEND",
                         "headerCount": 1,
-                        "domains": [{"domain": {"sourceRange": source(0, 1)}}],
+                        "domains": [{"domain": {"sourceRange": source(domain_col, domain_col + 1)}}],
                         "series": series,
                     },
                 },
@@ -302,7 +304,7 @@ def line_chart_request(sheet_id, metric_cols, header_row_index, end_row_index,
                     "overlayPosition": {
                         "anchorCell": {
                             "sheetId": sheet_id,
-                            "rowIndex": header_row_index,
+                            "rowIndex": header_row_index if anchor_row is None else anchor_row,
                             "columnIndex": anchor_col,
                         }
                     }

@@ -171,8 +171,10 @@ function buildHowTo_(ss) {
     'metric matrix. Weekly and monthly also get a compare block (pick two periods ' +
     'to see each metric side by side with a % change) and a % change column per ' +
     'metric. Any dimension flagged Break-out table gets its own totals-per-value ' +
-    'table stacked below. The monthly view also carries a line chart.');
-  sheet.setRowHeight(25, 58);
+    'table (capped at 50 values). A comparison tab lets you pick two campaigns ' +
+    '(or other dimension values) and date ranges side by side, with a trend chart. ' +
+    'The monthly view also carries a line chart.');
+  sheet.setRowHeight(25, 72);
 
   heading_(sheet, 'A27', '6. Run it');
   para_(sheet, 'A28',

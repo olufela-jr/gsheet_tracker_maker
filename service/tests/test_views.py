@@ -3,7 +3,7 @@
 from datetime import date
 
 from config import DEFAULT_CONFIG
-from tracker import build_view, build_views, date_to_serial
+from tracker import build_comparison, build_view, build_views, date_to_serial
 
 
 class FakeClient:
@@ -181,19 +181,72 @@ class TestBuildViews:
         c = _client(DEFAULT_CONFIG.daily_tab)
         c._tabs[DEFAULT_CONFIG.weekly_tab] = 4
         c._tabs[DEFAULT_CONFIG.monthly_tab] = 5
+        c._tabs[DEFAULT_CONFIG.comparison_tab] = 6
         return c
 
-    def test_builds_three_views(self):
+    def test_builds_three_views_and_comparison(self):
         client = self._client_all_tabs()
         results = build_views(client, DEFAULT_CONFIG)
-        assert [r["granularity"] for r in results] == ["day", "week", "month"]
+        assert [r["granularity"] for r in results[:3]] == ["day", "week", "month"]
+        assert results[-1]["tab"] == DEFAULT_CONFIG.comparison_tab
 
     def test_reads_setup_and_date_column_once(self):
-        # The quota fix: three views must not re-read setup / headers / the date
-        # column per view. Expect one read each: setup, headers, date column.
+        # The quota fix: the tabs must not re-read setup / headers / the date
+        # column per tab. Expect one read each: setup, headers, date column.
         client = self._client_all_tabs()
         build_views(client, DEFAULT_CONFIG)
         setup_reads = [r for r in client.reads if "setup" in r.lower()]
         header_reads = [r for r in client.reads if "1:1" in r]
         assert len(setup_reads) == 1
         assert len(header_reads) == 1
+
+
+class TestComparison:
+    def _client(self):
+        c = _client(DEFAULT_CONFIG.comparison_tab)
+        return c
+
+    def test_two_sides_dates_and_readout(self):
+        client = self._client()
+        result = build_comparison(client, DEFAULT_CONFIG)
+        assert result["tab"] == DEFAULT_CONFIG.comparison_tab
+        assert result["metrics"] == ["Spend", "Clicks", "CPC"]
+        # Split-screen headers.
+        assert client._has_raw([["SIDE A"]]) and client._has_raw([["SIDE B"]])
+        # Each side has a Region dropdown and its own date range.
+        assert any(w["values"] == [["Region", "**"]] for w in client.raw_writes)
+        assert any(w["values"][0][0] == "Date from" for w in client.raw_writes)
+        # Comparison table header.
+        assert client._has_raw([["Metric", "Side A", "Side B", "% diff"]])
+
+    def test_side_totals_use_date_range_and_dropdowns(self):
+        client = self._client()
+        build_comparison(client, DEFAULT_CONFIG)
+        # The metrics table's Side A / Side B / %diff formulas.
+        rows = None
+        for w in client.formula_writes:
+            v = w["values"]
+            if v and isinstance(v[0][0], str) and v[0][0].startswith("=SUMIFS(Spend"):
+                rows = v
+                break
+        assert rows is not None
+        spend_a = rows[0][0]
+        # Bounded by the side's from/to cells and filtered by the Region dropdown.
+        assert '">="&B' in spend_a and '"<"&(B' in spend_a
+        assert "Region, IF(" in spend_a
+        assert rows[0][2].startswith("=IFERROR((C")  # % diff
+
+    def test_trend_helper_and_chart(self):
+        client = self._client()
+        build_comparison(client, DEFAULT_CONFIG)
+        # A CHOOSE/MATCH picks the charted metric per side.
+        helper = [
+            w for w in client.formula_writes
+            if any("CHOOSE(MATCH(" in str(cell) for row in w["values"] for cell in row)
+        ]
+        assert helper
+        # A trend line chart is added.
+        added = [r for batch in client.batch_updates for r in batch if "addChart" in r]
+        assert len(added) == 1
+        chart = added[0]["addChart"]["chart"]["spec"]["basicChart"]
+        assert len(chart["series"]) == 2  # Side A and Side B
