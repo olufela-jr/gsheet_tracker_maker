@@ -1,15 +1,20 @@
 """Tests for scaffold and the BigQuery audit log, with fakes (no network)."""
 
+from datetime import date
+
 import pytest
 
 from config import DEFAULT_CONFIG
 from tracker import (
     ValidationError,
     build_tracker_record,
+    date_to_serial,
+    generate_mapping,
     log_tracker,
     require_input_tabs,
     scaffold,
 )
+from test_views import FakeClient
 
 
 class FakeSheet:
@@ -91,6 +96,50 @@ class TestScaffold:
         )
         scaffold(existing, DEFAULT_CONFIG)
         assert existing.writes == []
+
+
+class TestGenerateMapping:
+    def test_mapping_carries_the_available_dates(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", ""],
+            ["Spend", "metric", "", "currency", "", ""],
+        ]
+        headers = ["Day", "Region", "Spend"]
+        serials = [
+            date_to_serial(date(2025, 8, 5)),
+            date_to_serial(date(2025, 8, 4)),
+            date_to_serial(date(2025, 9, 1)),
+            date_to_serial(date(2025, 8, 5)),  # duplicate day
+        ]
+        tabs = {"setup": 1, "data_source": 2, DEFAULT_CONFIG.mapping_tab: 3}
+        client = FakeClient(setup, headers, serials, tabs)
+        result = generate_mapping(client, DEFAULT_CONFIG)
+        assert result["columns"] == 1  # Region
+        assert result["dates"] == 3
+
+        # The date column sits after the dimension columns: header row 1,
+        # then the distinct day serials newest first, no sentinel.
+        dates_col = client._find_write(client.raw_writes, "B1")
+        assert dates_col == [
+            ["Day"],
+            [date_to_serial(date(2025, 9, 1))],
+            [date_to_serial(date(2025, 8, 5))],
+            [date_to_serial(date(2025, 8, 4))],
+        ]
+
+        # The serials are formatted as dates.
+        fmts = [
+            r["repeatCell"] for batch in client.batch_updates
+            for r in batch if "repeatCell" in r
+        ]
+        date_fmt = [
+            f for f in fmts
+            if f["cell"]["userEnteredFormat"].get("numberFormat", {}).get("type") == "DATE"
+            and f["range"]["startColumnIndex"] == 1
+        ]
+        assert len(date_fmt) == 1
+        assert date_fmt[0]["range"]["endRowIndex"] == 4  # header + 3 dates
 
 
 class TestRequireInputTabs:

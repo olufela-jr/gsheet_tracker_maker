@@ -122,12 +122,12 @@ FISCAL_YEAR_START_MONTH = 7
 
 # Rows in each view's period matrix: the most periods the pickers can show.
 # The matrices are formula-driven windows scoped by each tab's date controls,
-# not lists of the dates seen in the data: daily renders up to a month of the
-# picked range and weekly up to 6 Monday-start weeks, both newest first;
-# monthly runs the picked fiscal year July to June, with months past TODAY()
-# left blank. Rows past the picked range blank out via the guard chain in
-# period_next_formula.
-PERIOD_ROWS = {"day": 31, "week": 6, "month": 12}
+# not lists of the dates seen in the data: daily renders the last 14 days of
+# the picked range (of the available data while the pickers are blank) and
+# weekly up to 6 Monday-start weeks, both newest first; monthly runs the
+# picked fiscal year July to June, with months past TODAY() left blank. Rows
+# past the picked range blank out via the guard chain in period_next_formula.
+PERIOD_ROWS = {"day": 14, "week": 6, "month": 12}
 
 # The expression for the current fiscal year's start year (bare, no '=').
 _FY_EXPR = "IF(MONTH(TODAY())>={m},YEAR(TODAY()),YEAR(TODAY())-1)".format(
@@ -136,29 +136,31 @@ _FY_EXPR = "IF(MONTH(TODAY())>={m},YEAR(TODAY()),YEAR(TODAY())-1)".format(
 
 
 def picker_default_formulas(granularity):
-    """Default formulas for a view's date controls: live rolling windows.
+    """Default formulas for a view's date controls.
 
-    Daily / weekly return a (from, to) pair ending yesterday (today's data is
+    Weekly returns a (from, to) pair ending yesterday (today's data is
     usually partial); monthly returns the single current-fiscal-year formula.
+    Daily has no defaults: its dropdowns start blank and the matrix falls
+    back to the newest available data.
     """
-    if granularity == "day":
-        return "=TODAY()-7", "=TODAY()-1"
     if granularity == "week":
         return "=TODAY()-28", "=TODAY()-1"
     if granularity == "month":
         return "=" + _FY_EXPR
-    raise ValueError("unknown granularity: {}".format(granularity))
+    raise ValueError("no picker defaults for granularity: {}".format(granularity))
 
 
-def period_start_formula(granularity, picker):
+def period_start_formula(granularity, picker, dates_src=None):
     """The matrix's first period cell, derived from the tab's date controls.
 
     `picker` is the (from, to) cell-ref pair for day/week — the newest period
     sits first, so the start is the picked end date (its week's Monday for
     weekly) — or the fiscal-year cell ref for month (1 July of that year).
+    Daily falls back to the newest date in `dates_src` (the Mapping date
+    column) while its picker is blank.
     """
     if granularity == "day":
-        return "={}".format(picker[1])
+        return '=IF({t}="",MAX({src}),{t})'.format(t=picker[1], src=dates_src)
     if granularity == "week":
         return "={t}-WEEKDAY({t},3)".format(t=picker[1])
     if granularity == "month":
@@ -166,18 +168,21 @@ def period_start_formula(granularity, picker):
     raise ValueError("unknown granularity: {}".format(granularity))
 
 
-def period_next_formula(granularity, cell, picker):
+def period_next_formula(granularity, cell, picker, first_cell=None):
     """Each further period cell, derived from `cell` (the row above).
 
     Daily / weekly step backwards one day / week per row and go blank once
     past the picked start date (weekly includes the week containing it), so
-    the matrix is sized to the picked range. Monthly steps forwards through
-    the fiscal year and goes blank once past the current month, so a current
-    fiscal year reads as the year to date and a past one shows all 12 months.
-    The chain is nested IFs, so a blank cell above never errors.
+    the matrix is sized to the picked range. While daily's From picker is
+    blank the window ends 14 days below `first_cell` (the matrix's effective
+    newest date). Monthly steps forwards through the fiscal year and goes
+    blank once past the current month, so a current fiscal year reads as the
+    year to date and a past one shows all 12 months. The chain is nested
+    IFs, so a blank cell above never errors.
     """
     if granularity == "day":
-        return '=IF({c}="","",IF({c}-1<{f},"",{c}-1))'.format(c=cell, f=picker[0])
+        return ('=IF({c}="","",IF({c}-1<IF({f}="",{first}-13,{f}),"",{c}-1))'
+                .format(c=cell, f=picker[0], first=first_cell))
     if granularity == "week":
         return '=IF({c}="","",IF({c}-7<{f}-WEEKDAY({f},3),"",{c}-7))'.format(
             c=cell, f=picker[0]
@@ -187,23 +192,11 @@ def period_next_formula(granularity, cell, picker):
     raise ValueError("unknown granularity: {}".format(granularity))
 
 
-def compare_range_defaults(granularity, b_from_cell, b_to_cell):
-    """Default (from, to) formulas for the compare table's two date ranges.
-
-    Returns ((a_from, a_to), (b_from, b_to)). Period B is the tab's default
-    window; Period A is the comparable prior span — the 28 days before on
-    weekly, the same span one year earlier on monthly (derived from the
-    Period B cells, so editing B moves A's default meaningfully on rebuild).
-    """
-    if granularity == "week":
-        return ("=TODAY()-56", "=TODAY()-29"), ("=TODAY()-28", "=TODAY()-1")
-    if granularity == "month":
-        return (
-            ("=EDATE({},-12)".format(b_from_cell), "=EDATE({},-12)".format(b_to_cell)),
-            ("=DATE({fy},{m},1)".format(fy=_FY_EXPR, m=FISCAL_YEAR_START_MONTH),
-             "=TODAY()-1"),
-        )
-    raise ValueError("no compare table for granularity: {}".format(granularity))
+def range_guarded(formula, from_cell, to_cell):
+    """The cell formula, blanked while either compare date cell is empty."""
+    return '=IF(OR({f}="",{t}=""),"",{rest})'.format(
+        f=from_cell, t=to_cell, rest=formula[1:]
+    )
 
 
 def blank_guarded(formula, cell):

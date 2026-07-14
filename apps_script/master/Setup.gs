@@ -168,15 +168,18 @@ function buildHowTo_(ss) {
   heading_(sheet, 'A24', '5. What gets generated');
   para_(sheet, 'A25',
     'mapping (the filter values per dimension) and the daily / weekly / monthly ' +
-    'views. Each view stacks blocks: a header (date controls on the first row, ' +
-    'dimension slicers below, live Today / days-left stats at the right), then a ' +
-    'KPI totals row and the by-period block scoped by the controls: daily and ' +
-    'weekly have Date from / to pickers (defaulting to the last 7 / 28 days, ' +
-    'newest first, up to a month of days or 6 weeks); monthly has a fiscal-year ' +
-    'picker (Jul-Jun, defaulting to the current one) with months past today left ' +
-    'blank. Weekly and monthly also get a comparison block just below the ' +
-    'slicers: two From/To date ranges side by side per metric, with a % change ' +
-    'row underneath. ' +
+    'views (mapping also carries the available dates, which feed the date ' +
+    'dropdowns). Each view stacks blocks: a header (date controls on the first ' +
+    'row, dimension slicers below, live Today / days-left stats at the right), ' +
+    'then a KPI totals row and the by-period block scoped by the controls: ' +
+    'daily has Date from / to dropdowns of the available dates (blank = the ' +
+    'last 14 days of data, newest first); weekly has calendar pickers ' +
+    'defaulting to the last 28 days (up to 6 weeks); monthly has a fiscal-year ' +
+    'picker (Jul-Jun, defaulting to the current one) with months past today ' +
+    'left blank. Weekly and monthly also get a comparison block just below the ' +
+    'slicers: two From/To date ranges side by side per metric with a % change ' +
+    'row underneath; the dates are dropdowns of the available dates and the ' +
+    'rows fill in once both are picked. ' +
     'Any dimension flagged Break-out table gets its own totals-per-value ' +
     'table (capped at 50 values). A comparison tab lets you pick two campaigns ' +
     '(or other dimension values) and date ranges side by side, with a trend chart. ' +

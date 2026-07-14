@@ -1,6 +1,9 @@
 # Real deploy values (project, billing, registry id). Template is committed.
 deploy/vars.sh
 
+# Local reference workbook (40MB) used for design inspiration; never committed.
+Dummy-example.xlsx
+
 # Per-instance clasp link (binds a folder to one sheet's script). Source is shared.
 apps_script/**/.clasp.json
 

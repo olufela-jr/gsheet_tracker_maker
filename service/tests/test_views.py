@@ -158,29 +158,40 @@ class TestBuildView:
     def test_monthly_compare_block_below_the_slicers(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
-        # The comparison block sits below the header (slicer grid at row 4).
+        # The comparison block sits below the header (slicer grid at row 4),
+        # with no label column: just From | To | metrics.
         header = client._find_write(client.raw_writes, "A6")
-        assert header == [["Compare", "From", "To", "Spend", "Clicks", "CPC"]]
-        assert client._has_raw([["Period A"], ["Period B"], ["% change"]])
-        rows = client._find_write(client.formula_writes, "B7")
-        # Period B defaults to the fiscal year to date; Period A to the same
-        # span a year earlier, derived from the B cells.
-        assert rows[0][:2] == ["=EDATE(B8,-12)", "=EDATE(C8,-12)"]
-        assert rows[1][:2] == [
-            "=DATE(IF(MONTH(TODAY())>=7,YEAR(TODAY()),YEAR(TODAY())-1),7,1)",
-            "=TODAY()-1",
-        ]
-        # Totals are date-ranged SUMIFS filtered by the slicer cell (B4) above.
+        assert header == [["From", "To", "Spend", "Clicks", "CPC"]]
+        rows = client._find_write(client.formula_writes, "A7")
+        # The date cells start blank (no defaults); "% change" labels the
+        # bottom row in the From column.
+        assert rows[0][:2] == ["", ""]
+        assert rows[1][:2] == ["", ""]
+        assert rows[2][:2] == ["% change", ""]
+        # Totals are date-ranged SUMIFS filtered by the slicer cell (B4)
+        # above, blank until both dates of the row are picked.
         spend_a = rows[0][2]
-        assert spend_a.startswith("=SUMIFS(Spend")
-        assert '">="&$B7' in spend_a and '"<"&($C7+1)' in spend_a
+        assert spend_a.startswith('=IF(OR($A7="",$B7=""),"",SUMIFS(Spend')
+        assert '">="&$A7' in spend_a and '"<"&($B7+1)' in spend_a
         assert "IF(B4=" in spend_a
         # % change per metric underneath, comparing the two rows.
         assert rows[2][2:] == [
+            '=IFERROR((C8-C7)/C7, "")',
             '=IFERROR((D8-D7)/D7, "")',
             '=IFERROR((E8-E7)/E7, "")',
-            '=IFERROR((F8-F7)/F7, "")',
         ]
+        # The From/To cells are dropdowns of the Mapping date column (the
+        # column after the one mapped dimension, so 'mapping'!B).
+        dvs = [
+            r["setDataValidation"] for batch in client.batch_updates
+            for r in batch if "setDataValidation" in r
+        ]
+        date_dds = [
+            dv for dv in dvs
+            if dv.get("rule", {}).get("condition", {}).get("type") == "ONE_OF_RANGE"
+            and "'mapping'!B2:B" in str(dv["rule"]["condition"]["values"])
+        ]
+        assert len(date_dds) == 4  # From + To on both compare rows
 
     def test_monthly_adds_a_chart(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
@@ -201,20 +212,34 @@ class TestBuildView:
         matrix = client._find_write(client.formula_writes, "B11")
         assert "(A11+1)" in matrix[0][0]
 
-    def test_daily_window_follows_the_date_pickers(self):
+    def test_daily_window_follows_the_date_dropdowns(self):
         client = _client(DEFAULT_CONFIG.daily_tab)
         result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
-        assert result["periods"] == 31
-        # The header's first row: Date from / Date to pairs defaulting to the
-        # last 7 days, ending yesterday.
-        defaults = client._find_write(client.formula_writes, "A3")
-        assert defaults == [["Date from", "=TODAY()-7", "Date to", "=TODAY()-1"]]
-        # The period column runs newest first from the picked end date and
-        # blanks out before the picked start date.
+        assert result["periods"] == 14
+        # The header's first row: Date from / Date to with NO defaults — the
+        # cells are blank dropdowns of the available dates.
+        header = client._find_write(client.raw_writes, "A3")
+        assert header == [["Date from", "", "Date to", ""]]
+        dvs = [
+            r["setDataValidation"] for batch in client.batch_updates
+            for r in batch if "setDataValidation" in r
+        ]
+        date_dds = [
+            dv for dv in dvs
+            if dv.get("rule", {}).get("condition", {}).get("type") == "ONE_OF_RANGE"
+            and "'mapping'!B2:B" in str(dv["rule"]["condition"]["values"])
+            and dv["range"]["startRowIndex"] == 2
+        ]
+        assert len(date_dds) == 2  # Date from + Date to
+        # The period column runs newest first from the picked end date —
+        # falling back to the newest available date — and blanks out before
+        # the picked start (or 14 days below the effective end).
         periods = client._find_write(client.formula_writes, "A11")
-        assert len(periods) == 31
-        assert periods[0] == ["=$D$3"]
-        assert periods[1] == ['=IF(A11="","",IF(A11-1<$B$3,"",A11-1))']
+        assert len(periods) == 14
+        assert periods[0] == ["=IF($D$3=\"\",MAX('mapping'!B2:B),$D$3)"]
+        assert periods[1] == [
+            '=IF(A11="","",IF(A11-1<IF($B$3="",$A$11-13,$B$3),"",A11-1))'
+        ]
         # Metric cells blank alongside their period cell.
         matrix = client._find_write(client.formula_writes, "B11")
         assert matrix[0][0].startswith('=IF(A11="","",SUMIFS(Spend')
@@ -226,10 +251,10 @@ class TestBuildView:
         # Header's date controls default to the last 4 weeks, ending yesterday.
         defaults = client._find_write(client.formula_writes, "A3")
         assert defaults == [["Date from", "=TODAY()-28", "Date to", "=TODAY()-1"]]
-        # Compare block defaults: this window vs the 28 days before it.
-        rows = client._find_write(client.formula_writes, "B7")
-        assert rows[0][:2] == ["=TODAY()-56", "=TODAY()-29"]
-        assert rows[1][:2] == ["=TODAY()-28", "=TODAY()-1"]
+        # Compare block date cells start blank (dropdowns, no defaults).
+        rows = client._find_write(client.formula_writes, "A7")
+        assert rows[0][:2] == ["", ""]
+        assert rows[1][:2] == ["", ""]
         # Matrix data at A16: Monday week-starts, newest first, blanking
         # before the week containing the picked start date.
         periods = client._find_write(client.formula_writes, "A16")

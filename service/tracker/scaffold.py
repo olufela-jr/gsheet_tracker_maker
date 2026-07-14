@@ -8,13 +8,15 @@ Source column has a named range the SUMIFS formulas can reference.
 import theme
 from config import column_to_letter, sanitise_name, a1
 
+from .common import read_date_serials
 from .fields import (
     ValidationError,
+    date_field_of,
     mapping_dimensions_of,
     read_data_source_headers,
     read_setup,
 )
-from .formulas import distinct_values
+from .formulas import DATE_FORMAT, distinct_buckets, distinct_values
 
 
 def existing_titles(client):
@@ -63,16 +65,19 @@ def require_input_tabs(client, cfg):
 
 
 def generate_mapping(client, cfg):
-    """Fill Mapping with one column per dimension, in Setup order.
+    """Fill Mapping with one column per dimension, plus the available dates.
 
     Every dimension gets a column regardless of its Show box (Show only
     controls the view slicers). Each column is: header in row 1, the sentinel
     in row 2, then the distinct sorted values from Data Source in row 3+.
-    Mapping is cleared first.
+    After the dimensions comes one column of the distinct dates seen in the
+    data (header row 1, serials from row 2, newest first, no sentinel) —
+    the views' date dropdowns source from it. Mapping is cleared first.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)
     dimensions = mapping_dimensions_of(fields)
+    date_name = date_field_of(fields)
     header_index = {header: i for i, header in enumerate(headers)}
 
     # mapping is a generated tab; create it if it does not exist yet.
@@ -98,10 +103,34 @@ def generate_mapping(client, cfg):
             }
         )
 
+    dates = []
+    if date_name is not None:
+        serials = read_date_serials(client, cfg, date_name, headers)
+        dates = sorted(distinct_buckets(serials, "day"), reverse=True)
+        date_col = column_to_letter(len(dimensions) + 1)
+        data.append(
+            {
+                "range": a1(cfg.mapping_tab, "{c}1".format(c=date_col)),
+                "majorDimension": "ROWS",
+                "values": [[date_name]] + [[s] for s in dates],
+            }
+        )
+
     if data:
         client.batch_write_values(data, value_input_option="RAW")
 
-    return {"dimensions": dimensions, "columns": len(dimensions)}
+    if dates:
+        sheet_id = client.get_sheet_id(cfg.mapping_tab)
+        client.batch_update([
+            theme.num_format(sheet_id, 1, 1 + len(dates),
+                             len(dimensions), len(dimensions) + 1, DATE_FORMAT)
+        ])
+
+    return {
+        "dimensions": dimensions,
+        "columns": len(dimensions),
+        "dates": len(dates),
+    }
 
 
 def create_named_ranges(client, cfg):

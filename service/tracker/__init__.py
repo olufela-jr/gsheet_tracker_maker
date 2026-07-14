@@ -48,10 +48,10 @@ from .formulas import (
     distinct_values,
     formula_tokens,
     number_format_pattern,
-    compare_range_defaults,
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
+    range_guarded,
     serial_to_date,
     sumifs_expr,
 )

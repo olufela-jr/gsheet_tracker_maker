@@ -22,10 +22,10 @@ from tracker import (
     distinct_values,
     formula_tokens,
     mapping_dimensions_of,
-    compare_range_defaults,
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
+    range_guarded,
     read_setup,
     number_format_pattern,
     sumifs_expr,
@@ -82,35 +82,40 @@ class TestBucketing:
 
 
 class TestPeriodWindows:
-    PICKERS = ("$A$7", "$B$7")
+    PICKERS = ("$B$3", "$D$3")
+    DATES_SRC = "'mapping'!B2:B"
 
     def test_window_sizes(self):
-        assert PERIOD_ROWS == {"day": 31, "week": 6, "month": 12}
+        assert PERIOD_ROWS == {"day": 14, "week": 6, "month": 12}
 
     def test_picker_defaults_are_rolling_windows(self):
-        assert picker_default_formulas("day") == ("=TODAY()-7", "=TODAY()-1")
         assert picker_default_formulas("week") == ("=TODAY()-28", "=TODAY()-1")
         assert picker_default_formulas("month") == (
             "=IF(MONTH(TODAY())>=7,YEAR(TODAY()),YEAR(TODAY())-1)"
         )
+        # Daily has no defaults: its dropdowns start blank.
+        with pytest.raises(ValueError):
+            picker_default_formulas("day")
 
-    def test_daily_runs_from_the_end_picker_back_to_the_start(self):
-        assert period_start_formula("day", self.PICKERS) == "=$B$7"
-        assert period_next_formula("day", "A14", self.PICKERS) == (
-            '=IF(A14="","",IF(A14-1<$A$7,"",A14-1))'
+    def test_daily_falls_back_to_the_newest_available_dates(self):
+        assert period_start_formula("day", self.PICKERS, self.DATES_SRC) == (
+            "=IF($D$3=\"\",MAX('mapping'!B2:B),$D$3)"
+        )
+        assert period_next_formula("day", "A11", self.PICKERS, "$A$11") == (
+            '=IF(A11="","",IF(A11-1<IF($B$3="",$A$11-13,$B$3),"",A11-1))'
         )
 
     def test_weekly_runs_monday_starts_back_to_the_start_week(self):
         assert period_start_formula("week", self.PICKERS) == (
-            "=$B$7-WEEKDAY($B$7,3)"
+            "=$D$3-WEEKDAY($D$3,3)"
         )
         assert period_next_formula("week", "A21", self.PICKERS) == (
-            '=IF(A21="","",IF(A21-7<$A$7-WEEKDAY($A$7,3),"",A21-7))'
+            '=IF(A21="","",IF(A21-7<$B$3-WEEKDAY($B$3,3),"",A21-7))'
         )
 
     def test_monthly_starts_fiscal_july_and_blanks_past_today(self):
-        assert period_start_formula("month", "$A$7") == "=DATE($A$7,7,1)"
-        assert period_next_formula("month", "A21", "$A$7") == (
+        assert period_start_formula("month", "$B$3") == "=DATE($B$3,7,1)"
+        assert period_next_formula("month", "A21", "$B$3") == (
             '=IF(A21="","",IF(EDATE(A21,1)>TODAY(),"",EDATE(A21,1)))'
         )
 
@@ -121,24 +126,14 @@ class TestPeriodWindows:
             period_start_formula("year", self.PICKERS)
         with pytest.raises(ValueError):
             period_next_formula("year", "A2", self.PICKERS)
-        with pytest.raises(ValueError):
-            compare_range_defaults("day", "B5", "C5")
-
-    def test_compare_range_defaults(self):
-        # Weekly: this 28-day window vs the 28 days before it.
-        (a_from, a_to), (b_from, b_to) = compare_range_defaults("week", "B5", "C5")
-        assert (a_from, a_to) == ("=TODAY()-56", "=TODAY()-29")
-        assert (b_from, b_to) == ("=TODAY()-28", "=TODAY()-1")
-        # Monthly: fiscal year to date vs the same span a year earlier.
-        (a_from, a_to), (b_from, b_to) = compare_range_defaults("month", "B5", "C5")
-        assert (a_from, a_to) == ("=EDATE(B5,-12)", "=EDATE(C5,-12)")
-        assert b_from == (
-            "=DATE(IF(MONTH(TODAY())>=7,YEAR(TODAY()),YEAR(TODAY())-1),7,1)"
-        )
-        assert b_to == "=TODAY()-1"
 
     def test_blank_guarded_wraps_a_formula(self):
         assert blank_guarded("=SUM(B:B)", "A5") == '=IF(A5="","",SUM(B:B))'
+
+    def test_range_guarded_needs_both_dates(self):
+        assert range_guarded("=SUM(B:B)", "$A7", "$B7") == (
+            '=IF(OR($A7="",$B7=""),"",SUM(B:B))'
+        )
 
 
 class TestSumifsExpr:
