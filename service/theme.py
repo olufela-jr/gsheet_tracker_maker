@@ -1,7 +1,8 @@
 """Visual theme for the view tabs and the input tabs.
 
-Navy banners and headers, a periwinkle highlight for calculated columns, white
-value cells on a soft grey page, gridlines off, no merged cells anywhere. Each
+Deep navy banners and headers, a light-blue tint for totals and calculated
+columns, white value cells on a soft grey page, gridlines off, no merged cells
+anywhere. Each
 view tab is a bucket x metric matrix with a filter bar and a KPI strip. All the
 colours and layout positions live here so the look can be changed in one place
 without touching the domain logic.
@@ -27,14 +28,16 @@ def rgb(hex_str):
     }
 
 
-# --- palette (navy headers, periwinkle highlight, white cells) ------------
+# --- palette (deep navy headers, light-blue highlight, white cells) --------
+# Borrowed from the reference dashboard: #002060 headers, #D9E1F2 total-row
+# tint, white value cells on a soft #F3F3F3 page.
 
-PAGE_BG = rgb("F1F3F4")       # soft grey page (kept)
+PAGE_BG = rgb("F3F3F3")       # soft grey page
 CARD_BG = rgb("FFFFFF")
-BANNER_BG = rgb("1F3864")     # dark navy header
+BANNER_BG = rgb("002060")     # deep navy header
 BANNER_TEXT = rgb("FFFFFF")
-PERIWINKLE = rgb("8EAADB")    # light-blue highlight (metric captions)
-ACCENT = rgb("1F3864")        # navy value text
+HIGHLIGHT = rgb("D9E1F2")     # light-blue tint (totals, calculated columns)
+ACCENT = rgb("002060")        # navy value text
 MUTED_TEXT = rgb("5F6368")
 HEADING_TEXT = rgb("202124")
 BORDER = rgb("BFBFBF")
@@ -236,19 +239,28 @@ def value_cells(sheet_id, r1, r2, c1, c2):
 
 
 def kpi_values(sheet_id, row, c1, c2):
-    """Bold navy value cells that read as headline numbers."""
+    """Tinted bold-navy value cells that read as a Total row."""
     return _format(
         sheet_id, row, row + 1, c1, c2,
-        {"textFormat": _text(11, ACCENT, bold=True)},
-        "userEnteredFormat.textFormat",
+        {"backgroundColor": HIGHLIGHT, "textFormat": _text(11, ACCENT, bold=True)},
+        "userEnteredFormat(backgroundColor,textFormat)",
     )
 
 
-def periwinkle_col(sheet_id, r1, r2, col):
-    """Tint one column periwinkle to mark a calculated-metric column."""
+def highlight_col(sheet_id, r1, r2, col):
+    """Tint one column light blue to mark a calculated-metric column."""
     return _format(
         sheet_id, r1, r2, col, col + 1,
-        {"backgroundColor": PERIWINKLE},
+        {"backgroundColor": HIGHLIGHT},
+        "userEnteredFormat.backgroundColor",
+    )
+
+
+def highlight_cells(sheet_id, r1, r2, c1, c2):
+    """The light-blue Total-row tint over a cell run (e.g. a % change row)."""
+    return _format(
+        sheet_id, r1, r2, c1, c2,
+        {"backgroundColor": HIGHLIGHT},
         "userEnteredFormat.backgroundColor",
     )
 

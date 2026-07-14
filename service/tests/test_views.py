@@ -96,44 +96,91 @@ def _client(granularity_tab, region_breakout=""):
 
 
 class TestBuildView:
-    def test_monthly_buckets_and_kpi_and_matrix(self):
+    def test_monthly_window_kpi_and_matrix(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
-        # Aug and Sep -> two monthly buckets.
-        assert result["buckets"] == 2
+        # Monthly is one fiscal year: 12 rows, July downwards.
+        assert result["periods"] == 12
         assert result["metrics"] == ["Spend", "Clicks", "CPC"]
 
+        # Header row one: the fiscal-year picker defaulting to the current FY.
+        # (Header 3-4, compare 6-9, KPI 11-12, matrix 14-16+.)
+        fy = client._find_write(client.formula_writes, "A3")
+        assert fy == [["Fiscal year (Jul-Jun)",
+                       "=IF(MONTH(TODAY())>=7,YEAR(TODAY()),YEAR(TODAY())-1)"]]
+
         # KPI header row: "Totals" + metric names.
-        kpi = client._find_write(client.raw_writes, "A6")
+        kpi = client._find_write(client.raw_writes, "A11")
         assert kpi == [["Totals", "Spend", "Clicks", "CPC"]]
 
         # KPI value row: grand totals (calc uses IFERROR + division).
-        grand = client._find_write(client.formula_writes, "B7")[0]
+        grand = client._find_write(client.formula_writes, "B12")[0]
         assert grand[0].startswith("=SUMIFS(Spend")
         assert grand[2].startswith('=IFERROR(SUMIFS(Spend')
         assert "/SUMIFS(Clicks" in grand[2]
 
-        # Main matrix sits below the compare block; monthly bounds use EOMONTH.
-        matrix = client._find_write(client.formula_writes, "B18")
-        assert len(matrix) == 2  # one row per bucket
-        assert "EOMONTH(A18,0)" in matrix[0][0]
-        assert matrix[1][0].startswith("=SUMIFS(Spend")
+        # The period column anchors on 1 July of the picked FY and steps
+        # forward one month per row, going blank once past the current month.
+        periods = client._find_write(client.formula_writes, "A16")
+        assert len(periods) == 12
+        assert periods[0] == ["=DATE($B$3,7,1)"]
+        assert periods[1] == ['=IF(A16="","",IF(EDATE(A16,1)>TODAY(),"",EDATE(A16,1)))']
 
-    def test_monthly_has_compare_block_and_delta_columns(self):
+        # Main matrix: one column per metric (no change % columns); monthly
+        # bounds use EOMONTH and each cell is blanked while its period cell
+        # is (future months).
+        header = client._find_write(client.raw_writes, "A15")
+        assert header == [["Period", "Spend", "Clicks", "CPC"]]
+        matrix = client._find_write(client.formula_writes, "B16")
+        assert len(matrix) == 12  # one row per window period
+        assert len(matrix[0]) == 3  # one column per metric
+        assert matrix[0][0].startswith('=IF(A16="","",SUMIFS(Spend')
+        assert "EOMONTH(A16,0)" in matrix[0][0]
+
+    def test_monthly_fiscal_year_dropdown(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
-        # Compare header row.
-        assert client._has_raw([["Metric", "Period A", "Period B", "Change"]])
-        # Compare change formula for the first metric.
-        cmp = client._find_write(client.formula_writes, "B11")
-        assert 'IFERROR((C11-B11)/B11' in cmp[0][2]
-        # Main header carries a change column beside each metric.
-        header = client._find_write(client.raw_writes, "A17")[0]
-        assert header.count("change %") == 3
-        # Delta cell references the value cell above it.
-        matrix = client._find_write(client.formula_writes, "B18")
-        assert matrix[0][1] == ""  # first bucket has no previous
-        assert "IFERROR((B19-B18)/B18" in matrix[1][1]
+        today = date.today()
+        this_fy = today.year - (0 if today.month >= 7 else 1)
+        rules = [
+            r["setDataValidation"]["rule"]["condition"]
+            for batch in client.batch_updates for r in batch
+            if "setDataValidation" in r and r["setDataValidation"].get("rule")
+        ]
+        fy_lists = [
+            c for c in rules
+            if c["type"] == "ONE_OF_LIST"
+            and c["values"][0]["userEnteredValue"] == str(this_fy)
+        ]
+        assert len(fy_lists) == 1
+        assert len(fy_lists[0]["values"]) == 5  # current FY and four back
+
+    def test_monthly_compare_block_below_the_slicers(self):
+        client = _client(DEFAULT_CONFIG.monthly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        # The comparison block sits below the header (slicer grid at row 4).
+        header = client._find_write(client.raw_writes, "A6")
+        assert header == [["Compare", "From", "To", "Spend", "Clicks", "CPC"]]
+        assert client._has_raw([["Period A"], ["Period B"], ["% change"]])
+        rows = client._find_write(client.formula_writes, "B7")
+        # Period B defaults to the fiscal year to date; Period A to the same
+        # span a year earlier, derived from the B cells.
+        assert rows[0][:2] == ["=EDATE(B8,-12)", "=EDATE(C8,-12)"]
+        assert rows[1][:2] == [
+            "=DATE(IF(MONTH(TODAY())>=7,YEAR(TODAY()),YEAR(TODAY())-1),7,1)",
+            "=TODAY()-1",
+        ]
+        # Totals are date-ranged SUMIFS filtered by the slicer cell (B4) above.
+        spend_a = rows[0][2]
+        assert spend_a.startswith("=SUMIFS(Spend")
+        assert '">="&$B7' in spend_a and '"<"&($C7+1)' in spend_a
+        assert "IF(B4=" in spend_a
+        # % change per metric underneath, comparing the two rows.
+        assert rows[2][2:] == [
+            '=IFERROR((D8-D7)/D7, "")',
+            '=IFERROR((E8-E7)/E7, "")',
+            '=IFERROR((F8-F7)/F7, "")',
+        ]
 
     def test_monthly_adds_a_chart(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
@@ -147,18 +194,108 @@ class TestBuildView:
         added = [r for batch in client.batch_updates for r in batch if "addChart" in r]
         assert added == []
         # No compare block on daily.
-        assert not client._has_raw([["Metric", "Period A", "Period B", "Change"]])
+        assert not client._has_raw([["Period A"], ["Period B"], ["% change"]])
         # Main table starts higher (no compare block) and has no delta columns.
         header = client._find_write(client.raw_writes, "A10")[0]
         assert header == ["Period", "Spend", "Clicks", "CPC"]
         matrix = client._find_write(client.formula_writes, "B11")
         assert "(A11+1)" in matrix[0][0]
 
-    def test_dropdown_seeded_with_sentinel(self):
+    def test_daily_window_follows_the_date_pickers(self):
+        client = _client(DEFAULT_CONFIG.daily_tab)
+        result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
+        assert result["periods"] == 31
+        # The header's first row: Date from / Date to pairs defaulting to the
+        # last 7 days, ending yesterday.
+        defaults = client._find_write(client.formula_writes, "A3")
+        assert defaults == [["Date from", "=TODAY()-7", "Date to", "=TODAY()-1"]]
+        # The period column runs newest first from the picked end date and
+        # blanks out before the picked start date.
+        periods = client._find_write(client.formula_writes, "A11")
+        assert len(periods) == 31
+        assert periods[0] == ["=$D$3"]
+        assert periods[1] == ['=IF(A11="","",IF(A11-1<$B$3,"",A11-1))']
+        # Metric cells blank alongside their period cell.
+        matrix = client._find_write(client.formula_writes, "B11")
+        assert matrix[0][0].startswith('=IF(A11="","",SUMIFS(Spend')
+
+    def test_weekly_window_follows_the_date_pickers(self):
+        client = _client(DEFAULT_CONFIG.weekly_tab)
+        result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert result["periods"] == 6
+        # Header's date controls default to the last 4 weeks, ending yesterday.
+        defaults = client._find_write(client.formula_writes, "A3")
+        assert defaults == [["Date from", "=TODAY()-28", "Date to", "=TODAY()-1"]]
+        # Compare block defaults: this window vs the 28 days before it.
+        rows = client._find_write(client.formula_writes, "B7")
+        assert rows[0][:2] == ["=TODAY()-56", "=TODAY()-29"]
+        assert rows[1][:2] == ["=TODAY()-28", "=TODAY()-1"]
+        # Matrix data at A16: Monday week-starts, newest first, blanking
+        # before the week containing the picked start date.
+        periods = client._find_write(client.formula_writes, "A16")
+        assert len(periods) == 6
+        assert periods[0] == ["=$D$3-WEEKDAY($D$3,3)"]
+        assert periods[1] == [
+            '=IF(A16="","",IF(A16-7<$B$3-WEEKDAY($B$3,3),"",A16-7))'
+        ]
+        # One column per metric, no delta columns.
+        matrix = client._find_write(client.formula_writes, "B16")
+        assert len(matrix[0]) == 3
+
+    def test_header_pairs_seeded_with_sentinel(self):
         client = _client(DEFAULT_CONFIG.weekly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
-        drop = client._find_write(client.raw_writes, "A4")
-        assert drop == [[DEFAULT_CONFIG.sentinel]]  # one dimension: Region
+        # One dimension: a single name | dropdown pair on the grid row, just
+        # below the header's date-controls row (so row 4).
+        pair = client._find_write(client.raw_writes, "A4")
+        assert pair == [["Region", DEFAULT_CONFIG.sentinel]]
+        # The Mapping dropdown is wired to the pair's value cell (B4).
+        dvs = [
+            r["setDataValidation"] for batch in client.batch_updates
+            for r in batch if "setDataValidation" in r
+        ]
+        wired = [
+            dv for dv in dvs
+            if dv.get("rule", {}).get("condition", {}).get("type") == "ONE_OF_RANGE"
+            and dv["range"]["startRowIndex"] == 3
+            and dv["range"]["startColumnIndex"] == 1
+        ]
+        assert len(wired) == 1
+
+    def test_header_stat_cells(self):
+        client = _client(DEFAULT_CONFIG.daily_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
+        stats = client._find_write(client.formula_writes, "I3")
+        assert stats == [
+            ["Today", "=TODAY()"],
+            ['="Days Left in "&TEXT(TODAY(),"mmmm")',
+             "=EOMONTH(TODAY(),0)-TODAY()+1"],
+        ]
+
+    def test_header_grid_wraps_after_four_pairs(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", ""],
+            ["Market", "dimension", "", "", "TRUE", ""],
+            ["Channel", "dimension", "", "", "TRUE", ""],
+            ["OS", "dimension", "", "", "TRUE", ""],
+            ["Language", "dimension", "", "", "TRUE", ""],
+            ["Spend", "metric", "", "currency", "", ""],
+        ]
+        headers = ["Day", "Region", "Market", "Channel", "OS", "Language", "Spend"]
+        serials = [date_to_serial(date(2025, 8, 4))]
+        tabs = {"setup": 1, "data_source": 2, DEFAULT_CONFIG.weekly_tab: 3}
+        client = FakeClient(setup, headers, serials, tabs)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        s = DEFAULT_CONFIG.sentinel
+        # The slicer grid wraps below the header's date-controls row.
+        row1 = client._find_write(client.raw_writes, "A4")
+        assert row1 == [["Region", s, "Market", s, "Channel", s, "OS", s]]
+        row2 = client._find_write(client.raw_writes, "A5")
+        assert row2 == [["Language", s]]
+        # A three-row header pushes the compare block and KPI strip down one:
+        # compare at 7-10, KPI at 12.
+        assert client._find_write(client.raw_writes, "A12") == [["Totals", "Spend"]]
 
     def test_breakout_table_rendered(self):
         client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="TRUE")

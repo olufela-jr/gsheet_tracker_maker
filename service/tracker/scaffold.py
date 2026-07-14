@@ -63,12 +63,12 @@ def require_input_tabs(client, cfg):
 
 
 def generate_mapping(client, cfg):
-    """Fill Mapping with one column per dimension that drives the front end.
+    """Fill Mapping with one column per dimension, in Setup order.
 
-    A column is created for every dimension that is shown as a filter OR broken
-    out into its own table, in Setup order. Each column is: header in row 1, the
-    sentinel in row 2, then the distinct sorted values from Data Source in row
-    3+. Mapping is cleared first.
+    Every dimension gets a column regardless of its Show box (Show only
+    controls the view slicers). Each column is: header in row 1, the sentinel
+    in row 2, then the distinct sorted values from Data Source in row 3+.
+    Mapping is cleared first.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)

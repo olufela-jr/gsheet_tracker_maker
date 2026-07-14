@@ -118,6 +118,20 @@ def one_of_range(sheet_id, row0, col0, source):
     }
 
 
+def date_picker(sheet_id, row0, col0):
+    """A DATE_IS_VALID rule on a single cell: Sheets shows a calendar picker."""
+    return {
+        "setDataValidation": {
+            "range": grid_dv(sheet_id, row0, row0 + 1, col0, col0 + 1),
+            "rule": {
+                "condition": {"type": "DATE_IS_VALID"},
+                "showCustomUi": True,
+                "strict": False,
+            },
+        }
+    }
+
+
 def one_of_list(sheet_id, row0, col0, values):
     """A ONE_OF_LIST dropdown on a single cell, from a fixed list of values."""
     return {

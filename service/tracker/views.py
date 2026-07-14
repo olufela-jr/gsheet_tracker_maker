@@ -1,27 +1,41 @@
 """The daily / weekly / monthly view tabs.
 
-A view is a stack of blocks, top to bottom: a title banner; a filter bar (one
-dropdown per shown dimension); a KPI strip of dimension-filtered grand totals;
-on the weekly and monthly views a compare block (two period pickers with
-per-metric A, B and % change); the by-period matrix (weekly/monthly also carry
-a % change column beside each metric); then one break-out table per flagged
-dimension (totals per value). The monthly view also gets a line chart.
+A view is a stack of blocks, top to bottom: a title banner; the header (a
+date-controls row, then the slicer pairs — dimension | dropdown, four to a
+row — with live Today and days-left-in-month stat cells at the right); on
+the weekly and monthly views the comparison block (two From/To date ranges
+side by side with the per-metric totals for each and a % change row
+underneath, filtered by the slicers); a KPI strip of slicer-filtered grand
+totals; the by-period block; then one break-out block per flagged dimension
+(totals per value). The monthly view also gets a line chart.
+
+The matrix's period column is a formula-driven window scoped by the tab's
+date controls, not a list of the dates seen in the data. Daily and weekly
+have Date from / Date to pickers (defaulting to the last 7 / 28 days, live
+formulas ending yesterday) and render the range newest first — up to a month
+of days, up to 6 Monday-start weeks. Monthly has a fiscal-year picker
+(July-June, defaulting to the current one) and runs July down to June, with
+months past TODAY() blank. Rows past the picked range blank out, so changing
+the pickers re-scopes every matrix without a rebuild.
 
 build_view orchestrates; each block is laid out by its own _add_* function
 that appends writes and formats to a shared Page. Positions come from the
-Page's running row cursor, so blocks that vary in height (buckets, dimension
-values) stack cleanly.
+Page's running row cursor, so blocks that vary in height (period windows,
+dimension values) stack cleanly.
 """
 
 from collections import namedtuple
+from datetime import date
 
 import theme
 from config import column_to_letter, sanitise_name, a1
 
 from .common import (
     Page,
+    date_picker,
     existing_chart_ids,
     grid_dv,
+    one_of_list,
     one_of_range,
     read_date_serials,
     read_mapping_values,
@@ -39,12 +53,19 @@ from .fields import (
 from .formulas import (
     DATE_FORMAT,
     DELTA_FORMAT,
+    FISCAL_YEAR_START_MONTH,
     MONTH_FORMAT,
+    PERIOD_ROWS,
+    between_formula,
+    blank_guarded,
     breakout_formula,
     bucket_formula,
-    distinct_buckets,
+    compare_range_defaults,
     grand_total_formula,
     number_format_pattern,
+    period_next_formula,
+    period_start_formula,
+    picker_default_formulas,
 )
 from .scaffold import ensure_tab
 
@@ -54,19 +75,18 @@ MAX_BREAKOUT_VALUES = 50
 
 # Everything the block builders need about one view, resolved once.
 #   metrics_meta:  (is_calculated, number_format_pattern) per metric
-#   has_delta:     compare block + per-period % change columns; weekly and
-#                  monthly only, and only when there is data to compare
-#   mstep:         columns used per metric in the main matrix (2 with deltas)
-#   kpi_last_col:  period + one column per metric
-#   main_last_col: metric + its delta on wk/mo
+#   num_periods:   rows in the period matrix (the PERIOD_ROWS window)
+#   has_compare:   the From/To compare table; weekly and monthly only
+#   kpi_last_col:  label/period column + one column per metric (also the
+#                  matrix width)
 _View = namedtuple(
     "_View",
     [
         "cfg", "tab", "granularity", "sentinel", "date_range",
         "metric_fields", "metric_names", "metrics_meta",
         "dimensions", "breakouts", "mapping_dims", "breakout_values",
-        "buckets", "has_metrics", "has_buckets", "has_delta", "mstep",
-        "date_pattern", "kpi_last_col", "main_last_col", "end_col",
+        "num_periods", "has_metrics", "has_compare",
+        "date_pattern", "kpi_last_col", "end_col",
     ],
 )
 
@@ -80,9 +100,9 @@ def view_specs(cfg):
     ]
 
 
-def _view_inputs(client, cfg, tab, granularity, fields, headers, serials,
+def _view_inputs(client, cfg, tab, granularity, fields, headers,
                  breakout_values):
-    """Resolve setup, headers, buckets, and layout maths into a _View bundle."""
+    """Resolve setup, headers, and layout maths into a _View bundle."""
     if fields is None:
         fields = read_setup(client, cfg)
     if headers is None:
@@ -97,22 +117,17 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers, serials,
             ["No single date field is declared, so no view can be built."]
         )
 
-    if serials is None:
-        serials = read_date_serials(client, cfg, date_name, headers)
-    buckets = distinct_buckets(serials, granularity)
-
     num_metrics = len(metric_fields)
     has_metrics = num_metrics > 0
-    has_buckets = bool(buckets)
-    # Compare + per-period deltas live on weekly and monthly, not daily.
-    has_delta = granularity in ("week", "month") and has_buckets and has_metrics
-    mstep = 2 if has_delta else 1
+    # The compare table lives on weekly and monthly, not daily.
+    has_compare = granularity in ("week", "month") and has_metrics
 
     if breakouts and breakout_values is None:
         breakout_values = read_mapping_values(client, cfg, mapping_dims)
 
     kpi_last_col = 1 + num_metrics
-    main_last_col = 1 + num_metrics * mstep
+    # Compare | From | To | one column per metric.
+    compare_last_col = 3 + num_metrics if has_compare else 0
     return _View(
         cfg=cfg,
         tab=tab,
@@ -127,15 +142,13 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers, serials,
         breakouts=breakouts,
         mapping_dims=mapping_dims,
         breakout_values=breakout_values or {},
-        buckets=buckets,
+        num_periods=PERIOD_ROWS[granularity],
         has_metrics=has_metrics,
-        has_buckets=has_buckets,
-        has_delta=has_delta,
-        mstep=mstep,
+        has_compare=has_compare,
         date_pattern=MONTH_FORMAT if granularity == "month" else DATE_FORMAT,
         kpi_last_col=kpi_last_col,
-        main_last_col=main_last_col,
-        end_col=max(main_last_col, kpi_last_col, len(dimensions), 4, 8),
+        # Wide enough for the header's stat cells (columns I:J).
+        end_col=max(kpi_last_col, compare_last_col, _STAT_COL + 2),
     )
 
 
@@ -145,31 +158,116 @@ def _add_title(page, v):
     page.row = 3  # leave row 2 blank
 
 
-def _add_filter_bar(page, v):
-    """Label row + dropdown row, one per shown dimension.
+# Dimension | dropdown pairs per control-header row (the dummy dashboard's
+# compact layout: label left, value right, four pairs across).
+PAIRS_PER_ROW = 4
 
-    Returns (dim_specs, drop_row): the (named_range, dropdown_cell) pair per
-    dimension that every SUMIFS filters by, and the dropdown row for the
-    validation wiring. ([], None) when no dimension is shown.
+# 0-based column of the live stat labels, right of the widest pairs grid.
+_STAT_COL = PAIRS_PER_ROW * 2
+
+
+# Fiscal years offered by the monthly view's dropdown (current one first).
+FISCAL_YEAR_CHOICES = 5
+
+
+def _add_filter_header(page, v):
+    """The header: date controls, slicer pairs grid, and live stat cells.
+
+    The first row holds the tab's date controls as label | value pairs —
+    Date from / Date to calendar pickers with rolling-window defaults, or the
+    monthly view's fiscal-year dropdown. Each shown dimension renders below
+    as a name | sentinel-dropdown pair, packed PAIRS_PER_ROW to a grid row.
+    The Today and days-left-in-month stats sit to the right at a fixed
+    column (the days-left label is itself a live formula).
+
+    Returns (dim_specs, drop_positions, pickers): the
+    (named_range, dropdown_cell) pair per dimension that every SUMIFS
+    filters by, each dropdown's 0-based (row, col) for the validation
+    wiring, and the date-control ref(s) the period matrix anchors on — a
+    (from, to) pair, or the fiscal-year cell.
     """
-    if not v.dimensions:
-        return [], None
-    label_row = page.row
-    drop_row = page.row + 1
-    page.write("A{}".format(label_row), [list(v.dimensions)])
-    page.write("A{}".format(drop_row), [[v.sentinel for _ in v.dimensions]])
-    dim_specs = [
-        (sanitise_name(dim), "{}{}".format(column_to_letter(i + 1), drop_row))
-        for i, dim in enumerate(v.dimensions)
-    ]
+    first_row = page.row
+    dates_row = first_row
+    if v.granularity == "month":
+        page.write_formulas(
+            "A{}".format(dates_row),
+            [["Fiscal year (Jul-Jun)", picker_default_formulas("month")]],
+        )
+        today = date.today()
+        this_fy = today.year - (0 if today.month >= FISCAL_YEAR_START_MONTH else 1)
+        page.validations.append(one_of_list(
+            page.sheet_id, dates_row - 1, 1,
+            [str(this_fy - i) for i in range(FISCAL_YEAR_CHOICES)]))
+        page.fmt.append(theme.num_format(
+            page.sheet_id, dates_row - 1, dates_row, 1, 2, "0"))
+        date_pairs = 1
+        pickers = "$B${}".format(dates_row)
+    else:
+        d_from, d_to = picker_default_formulas(v.granularity)
+        page.write_formulas("A{}".format(dates_row),
+                            [["Date from", d_from, "Date to", d_to]])
+        page.validations.append(date_picker(page.sheet_id, dates_row - 1, 1))
+        page.validations.append(date_picker(page.sheet_id, dates_row - 1, 3))
+        page.fmt.append(theme.num_format(
+            page.sheet_id, dates_row - 1, dates_row, 1, 2, DATE_FORMAT))
+        page.fmt.append(theme.num_format(
+            page.sheet_id, dates_row - 1, dates_row, 3, 4, DATE_FORMAT))
+        date_pairs = 2
+        pickers = ("$B${}".format(dates_row), "$D${}".format(dates_row))
+    for k in range(date_pairs):
+        page.fmt.append(theme.header_row(
+            page.sheet_id, dates_row - 1, k * 2, k * 2 + 1))
+        page.fmt.append(theme.value_cells(
+            page.sheet_id, dates_row - 1, dates_row, k * 2 + 1, k * 2 + 2))
+    page.fmt.append(theme.outer_border(
+        page.sheet_id, dates_row - 1, dates_row, 0, 2 * date_pairs))
 
-    ndim = len(v.dimensions)
-    page.fmt.append(theme.header_row(page.sheet_id, label_row - 1, 0, ndim))
-    page.fmt.append(theme.value_cells(page.sheet_id, drop_row - 1, drop_row, 0, ndim))
-    page.fmt.append(theme.outer_border(page.sheet_id, label_row - 1, drop_row, 0, ndim))
+    # Slicer pairs grid, below the date controls.
+    grid_first = first_row + 1
+    dim_specs, drop_positions = [], []
+    for i, dim in enumerate(v.dimensions):
+        r = grid_first + i // PAIRS_PER_ROW
+        col0 = (i % PAIRS_PER_ROW) * 2  # 0-based label column
+        drop_positions.append((r - 1, col0 + 1))
+        dim_specs.append(
+            (sanitise_name(dim), "{}{}".format(column_to_letter(col0 + 2), r))
+        )
+    grid_rows = -(-len(v.dimensions) // PAIRS_PER_ROW)  # ceil
+    for gr in range(grid_rows):
+        row_dims = v.dimensions[gr * PAIRS_PER_ROW:(gr + 1) * PAIRS_PER_ROW]
+        line = []
+        for dim in row_dims:
+            line.extend([dim, v.sentinel])
+        page.write("A{}".format(grid_first + gr), [line])
+    for r0, c0 in drop_positions:
+        page.fmt.append(theme.header_row(page.sheet_id, r0, c0 - 1, c0))
+        page.fmt.append(theme.value_cells(page.sheet_id, r0, r0 + 1, c0, c0 + 1))
+    if v.dimensions:
+        page.fmt.append(theme.outer_border(
+            page.sheet_id, grid_first - 1, grid_first - 1 + grid_rows,
+            0, 2 * min(len(v.dimensions), PAIRS_PER_ROW)))
 
-    page.row = drop_row + 2
-    return dim_specs, drop_row
+    stat_ref = "{}{}".format(column_to_letter(_STAT_COL + 1), first_row)
+    page.write_formulas(stat_ref, [
+        ["Today", "=TODAY()"],
+        ['="Days Left in "&TEXT(TODAY(),"mmmm")', "=EOMONTH(TODAY(),0)-TODAY()+1"],
+    ])
+    page.fmt.append(theme.header_row(
+        page.sheet_id, first_row - 1, _STAT_COL, _STAT_COL + 1))
+    page.fmt.append(theme.header_row(
+        page.sheet_id, first_row, _STAT_COL, _STAT_COL + 1))
+    page.fmt.append(theme.value_cells(
+        page.sheet_id, first_row - 1, first_row + 1, _STAT_COL + 1, _STAT_COL + 2))
+    page.fmt.append(theme.num_format(
+        page.sheet_id, first_row - 1, first_row, _STAT_COL + 1, _STAT_COL + 2,
+        DATE_FORMAT))
+    page.fmt.append(theme.num_format(
+        page.sheet_id, first_row, first_row + 1, _STAT_COL + 1, _STAT_COL + 2, "0"))
+    page.fmt.append(theme.outer_border(
+        page.sheet_id, first_row - 1, first_row + 1, _STAT_COL, _STAT_COL + 2))
+
+    page.row = first_row + max(1 + grid_rows, 2) + 1
+    return dim_specs, drop_positions, pickers
 
 
 def _add_kpi_strip(page, v, dim_specs):
@@ -196,52 +294,73 @@ def _add_kpi_strip(page, v, dim_specs):
 
 
 def _add_compare_block(page, v, dim_specs):
-    """Two period pickers with per-metric A, B and % change (weekly/monthly).
+    """Two From/To date ranges side by side, with % change underneath.
 
-    Returns the picker row so the dropdown wiring can point the pickers at the
-    period column of the matrix laid out below; None when the block is absent.
+    Sits just below the header; the totals are filtered by the slicer
+    dropdowns above (dim_specs), so one slice is compared across the two
+    ranges. The date cells are calendar pickers whose defaults are live
+    formulas: the tab's window vs the comparable prior span. Weekly and
+    monthly only.
     """
-    if not v.has_delta:
-        return None
-    picker_row = page.row
-    header_row = page.row + 1
-    first_row = page.row + 2
-    pa = "B{}".format(picker_row)
-    pb = "C{}".format(picker_row)
-    page.write("A{}".format(picker_row), [["Compare"]])
-    page.write("B{r}:C{r}".format(r=picker_row), [[v.buckets[0], v.buckets[-1]]])
+    if not v.has_compare:
+        return
+    header_row = page.row
+    a_row = page.row + 1
+    b_row = page.row + 2
+    diff_row = page.row + 3
     page.write("A{}".format(header_row),
-               [["Metric", "Period A", "Period B", "Change"]])
-    page.write("A{}".format(first_row), [[name] for name in v.metric_names])
-    rows = []
-    for i, m in enumerate(v.metric_fields):
-        r = first_row + i
-        a_formula = bucket_formula(m, v.date_range, pa, v.granularity, dim_specs, v.sentinel)
-        b_formula = bucket_formula(m, v.date_range, pb, v.granularity, dim_specs, v.sentinel)
-        change = '=IFERROR((C{r}-B{r})/B{r}, "")'.format(r=r)
-        rows.append([a_formula, b_formula, change])
-    page.write_formulas("B{}".format(first_row), rows)
+               [["Compare", "From", "To"] + v.metric_names])
+    page.write("A{}".format(a_row), [["Period A"], ["Period B"], ["% change"]])
 
-    last_col = 4  # Metric | Period A | Period B | Change
-    end = first_row - 1 + len(v.metric_fields)
-    page.fmt.append(theme.section_title(page.sheet_id, picker_row - 1, 1))
-    page.fmt.append(theme.value_cells(page.sheet_id, picker_row - 1, picker_row, 1, 3))
-    page.fmt.append(theme.num_format(
-        page.sheet_id, picker_row - 1, picker_row, 1, 3, v.date_pattern))
+    (a_from, a_to), (b_from, b_to) = compare_range_defaults(
+        v.granularity, "B{}".format(b_row), "C{}".format(b_row))
+
+    def totals(row):
+        lower = '">="&$B{}'.format(row)
+        upper = '"<"&($C{}+1)'.format(row)
+        return [between_formula(m, v.date_range, lower, upper, dim_specs, v.sentinel)
+                for m in v.metric_fields]
+
+    diffs = [
+        '=IFERROR(({c}{b}-{c}{a})/{c}{a}, "")'.format(
+            c=column_to_letter(4 + i), b=b_row, a=a_row)
+        for i in range(len(v.metric_fields))
+    ]
+    page.write_formulas("B{}".format(a_row), [
+        [a_from, a_to] + totals(a_row),
+        [b_from, b_to] + totals(b_row),
+        ["", ""] + diffs,
+    ])
+
+    last_col = 3 + len(v.metric_fields)
     page.fmt.append(theme.header_row(page.sheet_id, header_row - 1, 0, last_col))
-    page.fmt.append(theme.value_cells(page.sheet_id, first_row - 1, end, 0, last_col))
+    page.fmt.append(theme.value_cells(page.sheet_id, a_row - 1, diff_row, 0, last_col))
+    page.fmt.append(theme.num_format(
+        page.sheet_id, a_row - 1, b_row, 1, 3, DATE_FORMAT))
     for i, (_is_calc, pattern) in enumerate(v.metrics_meta):
-        rr = first_row - 1 + i
-        page.fmt.append(theme.num_format(page.sheet_id, rr, rr + 1, 1, 3, pattern))
-    page.fmt.append(theme.num_format(page.sheet_id, first_row - 1, end, 3, 4, DELTA_FORMAT))
-    page.fmt.append(theme.outer_border(page.sheet_id, header_row - 1, end, 0, last_col))
+        page.fmt.append(theme.num_format(
+            page.sheet_id, a_row - 1, b_row, 3 + i, 4 + i, pattern))
+    page.fmt.append(theme.highlight_cells(
+        page.sheet_id, diff_row - 1, diff_row, 0, last_col))
+    page.fmt.append(theme.num_format(
+        page.sheet_id, diff_row - 1, diff_row, 3, last_col, DELTA_FORMAT))
+    page.fmt.append(theme.outer_border(
+        page.sheet_id, header_row - 1, diff_row, 0, last_col))
+    for r0 in (a_row - 1, b_row - 1):
+        page.validations.append(date_picker(page.sheet_id, r0, 1))
+        page.validations.append(date_picker(page.sheet_id, r0, 2))
 
-    page.row = first_row + len(v.metric_fields) + 2
-    return picker_row
+    page.row = diff_row + 2
 
 
-def _add_period_matrix(page, v, dim_specs):
-    """One row per date bucket, one column (plus optional delta) per metric.
+def _add_period_matrix(page, v, dim_specs, pickers):
+    """One row per window period, one column per metric.
+
+    The period column is formulas: the first cell anchors the window on the
+    tab's date controls and each row below derives from the one above, going
+    blank past the picked range. Daily and weekly run newest first; monthly
+    runs the fiscal year July downwards (so the chart reads chronologically)
+    with unreached months blank.
 
     Returns (header_row, first_data_row) for the chart and the compare-picker
     dropdowns; None when there are no metrics.
@@ -252,50 +371,42 @@ def _add_period_matrix(page, v, dim_specs):
     header_row = page.row + 1
     first_data = page.row + 2
     page.write("A{}".format(title_row), [["By {}".format(v.granularity)]])
-    header = ["Period"]
-    for name in v.metric_names:
-        header.append(name)
-        if v.has_delta:
-            header.append("change %")
-    page.write("A{}".format(header_row), [header])
-    if v.has_buckets:
-        page.write("A{}".format(first_data), [[b] for b in v.buckets])
-        matrix = []
-        for j in range(len(v.buckets)):
-            prow = first_data + j
-            cell = "A{}".format(prow)
-            line = []
-            for i, m in enumerate(v.metric_fields):
-                line.append(bucket_formula(m, v.date_range, cell, v.granularity,
-                                           dim_specs, v.sentinel))
-                if v.has_delta:
-                    vc = column_to_letter(2 + i * v.mstep)  # value column letter
-                    if j == 0:
-                        line.append("")
-                    else:
-                        line.append('=IFERROR(({vc}{r}-{vc}{p})/{vc}{p}, "")'.format(
-                            vc=vc, r=prow, p=prow - 1))
-            matrix.append(line)
-        page.write_formulas("B{}".format(first_data), matrix)
+    page.write("A{}".format(header_row), [["Period"] + v.metric_names])
 
-    page.fmt.append(theme.section_title(page.sheet_id, title_row - 1, v.main_last_col))
-    page.fmt.append(theme.header_row(page.sheet_id, header_row - 1, 0, v.main_last_col))
-    if v.has_buckets:
-        end = first_data - 1 + len(v.buckets)
-        page.fmt.append(theme.value_cells(page.sheet_id, first_data - 1, end, 0, v.main_last_col))
-        page.fmt.append(theme.num_format(page.sheet_id, first_data - 1, end, 0, 1, v.date_pattern))
-        for i, (is_calc, pattern) in enumerate(v.metrics_meta):
-            vcol = 1 + i * v.mstep
-            page.fmt.append(theme.num_format(
-                page.sheet_id, first_data - 1, end, vcol, vcol + 1, pattern))
-            if is_calc:
-                page.fmt.append(theme.periwinkle_col(page.sheet_id, first_data - 1, end, vcol))
-            if v.has_delta:
-                page.fmt.append(theme.num_format(
-                    page.sheet_id, first_data - 1, end, vcol + 1, vcol + 2, DELTA_FORMAT))
-        page.fmt.append(theme.outer_border(page.sheet_id, header_row - 1, end, 0, v.main_last_col))
+    periods = [[period_start_formula(v.granularity, pickers)]]
+    for j in range(1, v.num_periods):
+        periods.append(
+            [period_next_formula(v.granularity, "A{}".format(first_data + j - 1),
+                                 pickers)]
+        )
+    page.write_formulas("A{}".format(first_data), periods)
 
-    page.row = first_data + len(v.buckets) + 2
+    matrix = []
+    for j in range(v.num_periods):
+        cell = "A{}".format(first_data + j)
+        matrix.append([
+            blank_guarded(
+                bucket_formula(m, v.date_range, cell, v.granularity,
+                               dim_specs, v.sentinel),
+                cell,
+            )
+            for m in v.metric_fields
+        ])
+    page.write_formulas("B{}".format(first_data), matrix)
+
+    page.fmt.append(theme.section_title(page.sheet_id, title_row - 1, v.kpi_last_col))
+    page.fmt.append(theme.header_row(page.sheet_id, header_row - 1, 0, v.kpi_last_col))
+    end = first_data - 1 + v.num_periods
+    page.fmt.append(theme.value_cells(page.sheet_id, first_data - 1, end, 0, v.kpi_last_col))
+    page.fmt.append(theme.num_format(page.sheet_id, first_data - 1, end, 0, 1, v.date_pattern))
+    for i, (is_calc, pattern) in enumerate(v.metrics_meta):
+        page.fmt.append(theme.num_format(
+            page.sheet_id, first_data - 1, end, 1 + i, 2 + i, pattern))
+        if is_calc:
+            page.fmt.append(theme.highlight_col(page.sheet_id, first_data - 1, end, 1 + i))
+    page.fmt.append(theme.outer_border(page.sheet_id, header_row - 1, end, 0, v.kpi_last_col))
+
+    page.row = first_data + v.num_periods + 2
     return header_row, first_data
 
 
@@ -337,36 +448,30 @@ def _add_breakout_tables(page, v, dim_specs):
                 page.fmt.append(theme.num_format(
                     page.sheet_id, first_data - 1, end, mcol, mcol + 1, pattern))
                 if is_calc:
-                    page.fmt.append(theme.periwinkle_col(page.sheet_id, first_data - 1, end, mcol))
+                    page.fmt.append(theme.highlight_col(page.sheet_id, first_data - 1, end, mcol))
             page.fmt.append(theme.outer_border(
                 page.sheet_id, header_row - 1, end, 0, v.kpi_last_col))
 
         page.row = first_data + len(vals) + 2
 
 
-def _add_dropdowns(page, v, drop_row, picker_row, matrix):
-    """Filter-bar dropdowns from Mapping; compare pickers from the matrix."""
-    for i, dim in enumerate(v.dimensions):
+def _add_dropdowns(page, v, drop_positions):
+    """Slicer dropdowns, sourced from each dimension's Mapping column."""
+    for (r0, c0), dim in zip(drop_positions, v.dimensions):
         map_col = column_to_letter(v.mapping_dims.index(dim) + 1)
         source = "=" + a1(v.cfg.mapping_tab, "{c}2:{c}".format(c=map_col))
-        page.validations.append(one_of_range(page.sheet_id, drop_row - 1, i, source))
-    if picker_row and matrix and v.has_buckets:
-        _mh, first_data = matrix
-        period_src = "=" + a1(v.tab, "A{r1}:A{r2}".format(
-            r1=first_data, r2=first_data + len(v.buckets) - 1))
-        page.validations.append(one_of_range(page.sheet_id, picker_row - 1, 1, period_src))  # Period A
-        page.validations.append(one_of_range(page.sheet_id, picker_row - 1, 2, period_src))  # Period B
+        page.validations.append(one_of_range(page.sheet_id, r0, c0, source))
 
 
 def build_view(client, cfg, tab, granularity, fields=None, headers=None,
-               serials=None, breakout_values=None):
+               breakout_values=None):
     """Build one themed view tab as a stack of blocks (see module docstring).
 
-    fields / headers / serials / breakout_values may be passed in when building
-    several views in one run, so the inputs are read once, not per view (the
+    fields / headers / breakout_values may be passed in when building several
+    views in one run, so the inputs are read once, not per view (the
     read-quota matters).
     """
-    v = _view_inputs(client, cfg, tab, granularity, fields, headers, serials,
+    v = _view_inputs(client, cfg, tab, granularity, fields, headers,
                      breakout_values)
 
     ensure_tab(client, tab)
@@ -375,12 +480,12 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
     page = Page(tab, sheet_id)
 
     _add_title(page, v)
-    dim_specs, drop_row = _add_filter_bar(page, v)
+    dim_specs, drop_positions, pickers = _add_filter_header(page, v)
+    _add_compare_block(page, v, dim_specs)
     _add_kpi_strip(page, v, dim_specs)
-    picker_row = _add_compare_block(page, v, dim_specs)
-    matrix = _add_period_matrix(page, v, dim_specs)
+    matrix = _add_period_matrix(page, v, dim_specs, pickers)
     _add_breakout_tables(page, v, dim_specs)
-    _add_dropdowns(page, v, drop_row, picker_row, matrix)
+    _add_dropdowns(page, v, drop_positions)
 
     end_row = page.row
     page.flush_values(client)
@@ -405,13 +510,13 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
 
     # The chart is added in its own batch: it references the matrix the prior
     # writes created, and delete-then-add in one batch can race.
-    if granularity == "month" and matrix and v.has_buckets and v.has_metrics:
+    if granularity == "month" and matrix:
         header_row, first_data = matrix
-        metric_value_cols = [1 + i * v.mstep for i in range(len(v.metric_fields))]
+        metric_value_cols = [1 + i for i in range(len(v.metric_fields))]
         client.batch_update([
             theme.line_chart_request(
                 sheet_id, metric_value_cols, header_row - 1,
-                (first_data - 1) + len(v.buckets), v.main_last_col + 1,
+                (first_data - 1) + v.num_periods, v.kpi_last_col + 1,
             )
         ])
 
@@ -421,16 +526,18 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
         "metrics": v.metric_names,
         "dimensions": v.dimensions,
         "breakouts": v.breakouts,
-        "buckets": len(v.buckets),
+        "periods": v.num_periods,
     }
 
 
 def build_views(client, cfg):
     """Build the three period views plus the Comparison tab.
 
-    Setup fields, data_source headers, the date column, and (when any dimension
-    is broken out) the Mapping values are read once here and passed to each
-    view, so building everything stays a few reads, not several per tab.
+    Setup fields, data_source headers, and (when any dimension is broken out)
+    the Mapping values are read once here and passed to each view, so building
+    everything stays a few reads, not several per tab. The date column is read
+    only for the Comparison tab's default date range: the views' period
+    windows are TODAY()-anchored formulas and need no data read.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)
@@ -444,7 +551,7 @@ def build_views(client, cfg):
         else {}
     )
     results = [
-        build_view(client, cfg, tab, granularity, fields, headers, serials, breakout_values)
+        build_view(client, cfg, tab, granularity, fields, headers, breakout_values)
         for tab, granularity in view_specs(cfg)
     ]
     results.append(build_comparison(client, cfg, fields, headers, serials))

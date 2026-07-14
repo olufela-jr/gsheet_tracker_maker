@@ -131,7 +131,8 @@ function buildHowTo_(ss) {
     'B  Type: metric, dimension, or date (tag exactly one field as date).\n' +
     'C  Formula: optional [Field]-token expression for a calculated metric, e.g. [Spend]/[Clicks].\n' +
     'D  Format: optional number format: currency, percent, or number.\n' +
-    'E  Show in views: dimensions only; check to show it as a filter, blank hides it.\n' +
+    'E  Show in views: dimensions only; check to add it as a filter dropdown (slicer) on ' +
+    'the views. Every dimension gets a mapping column either way.\n' +
     'F  Break-out table: dimensions only; check to add a totals-per-value table for it on every view.');
   sheet.setRowHeight(7, 140);
 
@@ -153,8 +154,8 @@ function buildHowTo_(ss) {
     .setBorder(true, true, true, true, true, true, BORDER,
                SpreadsheetApp.BorderStyle.SOLID);
   para_(sheet, 'A19',
-    'Channel has Show blank, so it stays in the data but is hidden from the ' +
-    'views. Region and Market have Break-out table checked, so each gets its own ' +
+    'Channel has Show blank, so it keeps its mapping column but gets no filter ' +
+    'dropdown on the views. Region and Market have Break-out table checked, so each gets its own ' +
     'totals-per-value table. Rows render in this order, so a calculated metric ' +
     'like CPC shows exactly where you place it.');
   sheet.setRowHeight(19, 44);
@@ -167,10 +168,16 @@ function buildHowTo_(ss) {
   heading_(sheet, 'A24', '5. What gets generated');
   para_(sheet, 'A25',
     'mapping (the filter values per dimension) and the daily / weekly / monthly ' +
-    'views. Each view has a filter bar, a KPI totals strip, and a date-bucketed ' +
-    'metric matrix. Weekly and monthly also get a compare block (pick two periods ' +
-    'to see each metric side by side with a % change) and a % change column per ' +
-    'metric. Any dimension flagged Break-out table gets its own totals-per-value ' +
+    'views. Each view stacks blocks: a header (date controls on the first row, ' +
+    'dimension slicers below, live Today / days-left stats at the right), then a ' +
+    'KPI totals row and the by-period block scoped by the controls: daily and ' +
+    'weekly have Date from / to pickers (defaulting to the last 7 / 28 days, ' +
+    'newest first, up to a month of days or 6 weeks); monthly has a fiscal-year ' +
+    'picker (Jul-Jun, defaulting to the current one) with months past today left ' +
+    'blank. Weekly and monthly also get a comparison block just below the ' +
+    'slicers: two From/To date ranges side by side per metric, with a % change ' +
+    'row underneath. ' +
+    'Any dimension flagged Break-out table gets its own totals-per-value ' +
     'table (capped at 50 values). A comparison tab lets you pick two campaigns ' +
     '(or other dimension values) and date ranges side by side, with a trend chart. ' +
     'The monthly view also carries a line chart.');

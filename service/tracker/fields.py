@@ -83,12 +83,12 @@ def metrics_of(fields):
 
 
 def dimensions_of(fields):
-    """Dimension names that drive the front end, in Setup order.
+    """Dimension names shown as view slicers, in Setup order.
 
-    Only dimensions with the Show box checked become filter dropdowns and
-    mapping columns. An unchecked dimension stays in the data but is hidden
-    from the daily/weekly/monthly views, and metrics simply aggregate over all
-    its values (no SUMIFS clause for it).
+    Only dimensions with the Show box checked become filter dropdowns on the
+    daily/weekly/monthly views. An unchecked dimension keeps its mapping
+    column but gets no slicer, and metrics simply aggregate over all its
+    values (no SUMIFS clause for it).
     """
     return [f.name for f in fields if f.type == "dimension" and f.show]
 
@@ -103,16 +103,15 @@ def breakout_dimensions_of(fields):
 
 
 def mapping_dimensions_of(fields):
-    """Dimensions that need a mapping column, in Setup order.
+    """All dimensions, in Setup order: every one gets a mapping column.
 
-    A mapping column (its distinct values) is needed to drive a filter dropdown
-    or to label a break-out table, so it covers shown OR broken-out dimensions.
+    Mapping is independent of Show — the Show box only controls which
+    dimensions appear as slicers on the views. Keeping a column of distinct
+    values per dimension means hiding/showing a slicer never reshapes the
+    Mapping tab, and every dimension's values stay available to drive
+    dropdowns and break-out labels.
     """
-    return [
-        f.name
-        for f in fields
-        if f.type == "dimension" and (f.show or f.breakout)
-    ]
+    return [f.name for f in fields if f.type == "dimension"]
 
 
 def date_field_of(fields):

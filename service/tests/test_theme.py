@@ -31,11 +31,17 @@ class TestPrimitives:
         assert "repeatCell" in theme.value_cells(1, 9, 10, 0, 4)
         assert "repeatCell" in theme.banner(1, 0, 6)
 
-    def test_periwinkle_col_tints_background(self):
-        req = theme.periwinkle_col(1, 9, 12, 3)
+    def test_highlight_col_tints_background(self):
+        req = theme.highlight_col(1, 9, 12, 3)
         fmt = req["repeatCell"]["cell"]["userEnteredFormat"]
-        assert fmt["backgroundColor"] == theme.PERIWINKLE
+        assert fmt["backgroundColor"] == theme.HIGHLIGHT
         assert req["repeatCell"]["fields"] == "userEnteredFormat.backgroundColor"
+
+    def test_kpi_values_are_tinted_total_cells(self):
+        req = theme.kpi_values(1, 9, 1, 4)
+        fmt = req["repeatCell"]["cell"]["userEnteredFormat"]
+        assert fmt["backgroundColor"] == theme.HIGHLIGHT
+        assert fmt["textFormat"]["bold"] is True
 
     def test_num_format_sets_number_pattern(self):
         req = theme.num_format(1, 9, 12, 1, 2, "0%")
