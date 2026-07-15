@@ -174,9 +174,10 @@ function buildHowTo_(ss) {
     'then a KPI totals row and the by-period block scoped by the controls: ' +
     'daily has Date from / to dropdowns of the available dates (blank = the ' +
     'last 14 days of data, newest first); weekly has calendar pickers ' +
-    'defaulting to the last 28 days (up to 6 weeks); monthly has a fiscal-year ' +
-    'picker (Jul-Jun, defaulting to the current one) with months past today ' +
-    'left blank. Weekly and monthly also get a comparison block just below the ' +
+    'defaulting to the last 28 days (up to 6 weeks); monthly has a Year ' +
+    'dropdown of the years in your data (defaulting to the current year) ' +
+    'with months past today left blank. Weekly and monthly also get a ' +
+    'comparison block just below the ' +
     'slicers: two From/To date ranges side by side per metric with a % change ' +
     'row underneath; the dates are dropdowns of the available dates and the ' +
     'rows fill in once both are picked. ' +

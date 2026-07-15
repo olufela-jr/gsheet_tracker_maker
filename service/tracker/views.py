@@ -14,8 +14,8 @@ date controls. Daily's Date from / Date to are dropdowns of the available
 dates (the Mapping tab's date column), blank by default — the by-day block
 then shows the newest 14 days of data. Weekly's are calendar pickers
 defaulting to the last 28 days (up to 6 Monday-start weeks, newest first).
-Monthly has a fiscal-year picker (July-June, defaulting to the current one)
-and runs July down to June, with months past TODAY() blank. Rows past the
+Monthly has a Year dropdown (defaulting to the current calendar year)
+and runs January down to December, with months past TODAY() blank. Rows past the
 picked range blank out, so changing the pickers re-scopes every matrix
 without a rebuild.
 
@@ -26,7 +26,6 @@ dimension values) stack cleanly.
 """
 
 from collections import namedtuple
-from datetime import date
 
 import theme
 from config import column_to_letter, sanitise_name, a1
@@ -36,7 +35,6 @@ from .common import (
     date_picker,
     existing_chart_ids,
     grid_dv,
-    one_of_list,
     one_of_range,
     read_date_serials,
     read_mapping_values,
@@ -54,7 +52,6 @@ from .fields import (
 from .formulas import (
     DATE_FORMAT,
     DELTA_FORMAT,
-    FISCAL_YEAR_START_MONTH,
     MONTH_FORMAT,
     PERIOD_ROWS,
     between_formula,
@@ -83,7 +80,8 @@ MAX_BREAKOUT_VALUES = 50
 _View = namedtuple(
     "_View",
     [
-        "cfg", "tab", "granularity", "sentinel", "date_range", "dates_src",
+        "cfg", "tab", "granularity", "sentinel", "date_range",
+        "dates_src", "years_src",
         "metric_fields", "metric_names", "metrics_meta",
         "dimensions", "breakouts", "mapping_dims", "breakout_values",
         "num_periods", "has_metrics", "has_compare",
@@ -129,10 +127,13 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers,
     kpi_last_col = 1 + num_metrics
     # From | To | one column per metric.
     compare_last_col = 2 + num_metrics if has_compare else 0
-    # The Mapping tab's available-dates column (after the dimension columns);
-    # the date dropdowns and the daily fallback window source from it.
+    # The Mapping tab's available-dates and available-years columns (after
+    # the dimension columns); the date and Year dropdowns and the daily
+    # fallback window source from them.
     dates_col = column_to_letter(len(mapping_dims) + 1)
+    years_col = column_to_letter(len(mapping_dims) + 2)
     dates_src = a1(cfg.mapping_tab, "{c}2:{c}".format(c=dates_col))
+    years_src = a1(cfg.mapping_tab, "{c}2:{c}".format(c=years_col))
     return _View(
         cfg=cfg,
         tab=tab,
@@ -140,6 +141,7 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers,
         sentinel=cfg.sentinel,
         date_range=sanitise_name(date_name),
         dates_src=dates_src,
+        years_src=years_src,
         metric_fields=metric_fields,
         metric_names=[m.name for m in metric_fields],
         metrics_meta=[(bool(m.formula), number_format_pattern(m.fmt))
@@ -172,16 +174,12 @@ PAIRS_PER_ROW = 4
 _STAT_COL = PAIRS_PER_ROW * 2
 
 
-# Fiscal years offered by the monthly view's dropdown (current one first).
-FISCAL_YEAR_CHOICES = 5
-
-
 def _add_filter_header(page, v):
     """The header: date controls, slicer pairs grid, and live stat cells.
 
     The first row holds the tab's date controls as label | value pairs —
     Date from / Date to calendar pickers with rolling-window defaults, or the
-    monthly view's fiscal-year dropdown. Each shown dimension renders below
+    monthly view's Year dropdown. Each shown dimension renders below
     as a name | sentinel-dropdown pair, packed PAIRS_PER_ROW to a grid row.
     The Today and days-left-in-month stats sit to the right at a fixed
     column (the days-left label is itself a live formula).
@@ -190,20 +188,17 @@ def _add_filter_header(page, v):
     (named_range, dropdown_cell) pair per dimension that every SUMIFS
     filters by, each dropdown's 0-based (row, col) for the validation
     wiring, and the date-control ref(s) the period matrix anchors on — a
-    (from, to) pair, or the fiscal-year cell.
+    (from, to) pair, or the year cell.
     """
     first_row = page.row
     dates_row = first_row
     if v.granularity == "month":
         page.write_formulas(
             "A{}".format(dates_row),
-            [["Fiscal year (Jul-Jun)", picker_default_formulas("month")]],
+            [["Year", picker_default_formulas("month")]],
         )
-        today = date.today()
-        this_fy = today.year - (0 if today.month >= FISCAL_YEAR_START_MONTH else 1)
-        page.validations.append(one_of_list(
-            page.sheet_id, dates_row - 1, 1,
-            [str(this_fy - i) for i in range(FISCAL_YEAR_CHOICES)]))
+        page.validations.append(one_of_range(
+            page.sheet_id, dates_row - 1, 1, "=" + v.years_src))
         page.fmt.append(theme.num_format(
             page.sheet_id, dates_row - 1, dates_row, 1, 2, "0"))
         date_pairs = 1
@@ -377,7 +372,7 @@ def _add_period_matrix(page, v, dim_specs, pickers):
     The period column is formulas: the first cell anchors the window on the
     tab's date controls and each row below derives from the one above, going
     blank past the picked range. Daily and weekly run newest first; monthly
-    runs the fiscal year July downwards (so the chart reads chronologically)
+    runs the picked year January downwards (so the chart reads chronologically)
     with unreached months blank.
 
     Returns (header_row, first_data_row) for the chart and the compare-picker

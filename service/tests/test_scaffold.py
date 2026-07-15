@@ -117,6 +117,7 @@ class TestGenerateMapping:
         result = generate_mapping(client, DEFAULT_CONFIG)
         assert result["columns"] == 1  # Region
         assert result["dates"] == 3
+        assert result["years"] == 1
 
         # The date column sits after the dimension columns: header row 1,
         # then the distinct day serials newest first, no sentinel.
@@ -127,6 +128,10 @@ class TestGenerateMapping:
             [date_to_serial(date(2025, 8, 5))],
             [date_to_serial(date(2025, 8, 4))],
         ]
+
+        # The years column follows: the distinct years of those dates.
+        years_col = client._find_write(client.raw_writes, "C1")
+        assert years_col == [["Year"], [2025]]
 
         # The serials are formatted as dates.
         fmts = [

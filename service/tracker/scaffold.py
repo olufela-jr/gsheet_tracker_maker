@@ -16,7 +16,7 @@ from .fields import (
     read_data_source_headers,
     read_setup,
 )
-from .formulas import DATE_FORMAT, distinct_buckets, distinct_values
+from .formulas import DATE_FORMAT, distinct_buckets, distinct_values, serial_to_date
 
 
 def existing_titles(client):
@@ -70,9 +70,10 @@ def generate_mapping(client, cfg):
     Every dimension gets a column regardless of its Show box (Show only
     controls the view slicers). Each column is: header in row 1, the sentinel
     in row 2, then the distinct sorted values from Data Source in row 3+.
-    After the dimensions comes one column of the distinct dates seen in the
-    data (header row 1, serials from row 2, newest first, no sentinel) —
-    the views' date dropdowns source from it. Mapping is cleared first.
+    After the dimensions come two generated columns the views' date controls
+    source from: the distinct dates seen in the data, then the distinct
+    years of those dates (each: header row 1, values from row 2, newest
+    first, no sentinel). Mapping is cleared first.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)
@@ -103,16 +104,25 @@ def generate_mapping(client, cfg):
             }
         )
 
-    dates = []
+    dates, years = [], []
     if date_name is not None:
         serials = read_date_serials(client, cfg, date_name, headers)
         dates = sorted(distinct_buckets(serials, "day"), reverse=True)
+        years = sorted({serial_to_date(s).year for s in dates}, reverse=True)
         date_col = column_to_letter(len(dimensions) + 1)
+        year_col = column_to_letter(len(dimensions) + 2)
         data.append(
             {
                 "range": a1(cfg.mapping_tab, "{c}1".format(c=date_col)),
                 "majorDimension": "ROWS",
                 "values": [[date_name]] + [[s] for s in dates],
+            }
+        )
+        data.append(
+            {
+                "range": a1(cfg.mapping_tab, "{c}1".format(c=year_col)),
+                "majorDimension": "ROWS",
+                "values": [["Year"]] + [[y] for y in years],
             }
         )
 
@@ -130,6 +140,7 @@ def generate_mapping(client, cfg):
         "dimensions": dimensions,
         "columns": len(dimensions),
         "dates": len(dates),
+        "years": len(years),
     }
 
 

@@ -34,7 +34,6 @@ from .fields import (
 from .formulas import (
     DATE_FORMAT,
     DELTA_FORMAT,
-    FISCAL_YEAR_START_MONTH,
     MONTH_FORMAT,
     PERIOD_ROWS,
     blank_guarded,

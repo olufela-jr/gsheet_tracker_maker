@@ -99,15 +99,14 @@ class TestBuildView:
     def test_monthly_window_kpi_and_matrix(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
-        # Monthly is one fiscal year: 12 rows, July downwards.
+        # Monthly is one calendar year: 12 rows, January downwards.
         assert result["periods"] == 12
         assert result["metrics"] == ["Spend", "Clicks", "CPC"]
 
-        # Header row one: the fiscal-year picker defaulting to the current FY.
+        # Header row one: the Year dropdown defaulting to the current year.
         # (Header 3-4, compare 6-9, KPI 11-12, matrix 14-16+.)
-        fy = client._find_write(client.formula_writes, "A3")
-        assert fy == [["Fiscal year (Jul-Jun)",
-                       "=IF(MONTH(TODAY())>=7,YEAR(TODAY()),YEAR(TODAY())-1)"]]
+        year = client._find_write(client.formula_writes, "A3")
+        assert year == [["Year", "=YEAR(TODAY())"]]
 
         # KPI header row: "Totals" + metric names.
         kpi = client._find_write(client.raw_writes, "A11")
@@ -119,11 +118,11 @@ class TestBuildView:
         assert grand[2].startswith('=IFERROR(SUMIFS(Spend')
         assert "/SUMIFS(Clicks" in grand[2]
 
-        # The period column anchors on 1 July of the picked FY and steps
+        # The period column anchors on 1 January of the picked year and steps
         # forward one month per row, going blank once past the current month.
         periods = client._find_write(client.formula_writes, "A16")
         assert len(periods) == 12
-        assert periods[0] == ["=DATE($B$3,7,1)"]
+        assert periods[0] == ["=DATE($B$3,1,1)"]
         assert periods[1] == ['=IF(A16="","",IF(EDATE(A16,1)>TODAY(),"",EDATE(A16,1)))']
 
         # Main matrix: one column per metric (no change % columns); monthly
@@ -137,23 +136,23 @@ class TestBuildView:
         assert matrix[0][0].startswith('=IF(A16="","",SUMIFS(Spend')
         assert "EOMONTH(A16,0)" in matrix[0][0]
 
-    def test_monthly_fiscal_year_dropdown(self):
+    def test_monthly_year_dropdown_sources_available_years(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
-        today = date.today()
-        this_fy = today.year - (0 if today.month >= 7 else 1)
-        rules = [
-            r["setDataValidation"]["rule"]["condition"]
-            for batch in client.batch_updates for r in batch
-            if "setDataValidation" in r and r["setDataValidation"].get("rule")
+        # The Year cell (B3) is a dropdown of the Mapping years column (the
+        # column after the dates column, so 'mapping'!C with one dimension).
+        dvs = [
+            r["setDataValidation"] for batch in client.batch_updates
+            for r in batch if "setDataValidation" in r
         ]
-        fy_lists = [
-            c for c in rules
-            if c["type"] == "ONE_OF_LIST"
-            and c["values"][0]["userEnteredValue"] == str(this_fy)
+        year_dds = [
+            dv for dv in dvs
+            if dv.get("rule", {}).get("condition", {}).get("type") == "ONE_OF_RANGE"
+            and "'mapping'!C2:C" in str(dv["rule"]["condition"]["values"])
         ]
-        assert len(fy_lists) == 1
-        assert len(fy_lists[0]["values"]) == 5  # current FY and four back
+        assert len(year_dds) == 1
+        assert year_dds[0]["range"]["startRowIndex"] == 2
+        assert year_dds[0]["range"]["startColumnIndex"] == 1
 
     def test_monthly_compare_block_below_the_slicers(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)

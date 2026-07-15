@@ -90,9 +90,7 @@ class TestPeriodWindows:
 
     def test_picker_defaults_are_rolling_windows(self):
         assert picker_default_formulas("week") == ("=TODAY()-28", "=TODAY()-1")
-        assert picker_default_formulas("month") == (
-            "=IF(MONTH(TODAY())>=7,YEAR(TODAY()),YEAR(TODAY())-1)"
-        )
+        assert picker_default_formulas("month") == "=YEAR(TODAY())"
         # Daily has no defaults: its dropdowns start blank.
         with pytest.raises(ValueError):
             picker_default_formulas("day")
@@ -113,8 +111,8 @@ class TestPeriodWindows:
             '=IF(A21="","",IF(A21-7<$B$3-WEEKDAY($B$3,3),"",A21-7))'
         )
 
-    def test_monthly_starts_fiscal_july_and_blanks_past_today(self):
-        assert period_start_formula("month", "$B$3") == "=DATE($B$3,7,1)"
+    def test_monthly_starts_january_and_blanks_past_today(self):
+        assert period_start_formula("month", "$B$3") == "=DATE($B$3,1,1)"
         assert period_next_formula("month", "A21", "$B$3") == (
             '=IF(A21="","",IF(EDATE(A21,1)>TODAY(),"",EDATE(A21,1)))'
         )
