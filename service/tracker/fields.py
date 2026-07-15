@@ -7,7 +7,7 @@ rules.
 
 from collections import namedtuple
 
-from config import a1
+from config import a1, sanitise_name
 
 from .formulas import formula_tokens
 
@@ -131,7 +131,10 @@ def validate(client, cfg):
 
     Rules: at least one metric; exactly one date field; raw fields (no formula)
     must be Data Source headers, while calculated fields (with a formula) skip
-    that check but their [Field] tokens must reference known raw fields.
+    that check but their [Field] tokens must reference known raw fields; field
+    names and Data Source headers must be unique once sanitised — the SUMIFS
+    bind to one named range per sanitised name and Mapping reads data columns
+    by header, so a duplicate silently points formulas at the wrong column.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)
@@ -149,6 +152,40 @@ def validate(client, cfg):
         errors.append("More than one date field; tag exactly one.")
     if not headers:
         errors.append("Data Source has no header row.")
+
+    seen_fields = {}
+    for f in fields:
+        key = sanitise_name(f.name).lower()
+        if key in seen_fields and f.name not in seen_fields[key]:
+            errors.append(
+                "Setup fields '{}' and '{}' collide (same name once sanitised); "
+                "every field needs a unique name.".format(seen_fields[key][0], f.name)
+            )
+        elif key in seen_fields:
+            errors.append(
+                "Setup declares '{}' more than once; every field needs a "
+                "unique name.".format(f.name)
+            )
+        seen_fields.setdefault(key, []).append(f.name)
+
+    seen_headers = {}
+    for header in headers:
+        name = str(header).strip()
+        if not name:
+            continue
+        key = sanitise_name(name).lower()
+        if key in seen_headers and name not in seen_headers[key]:
+            errors.append(
+                "Data Source headers '{}' and '{}' collide (same name once "
+                "sanitised); each column needs a unique header.".format(
+                    seen_headers[key][0], name)
+            )
+        elif key in seen_headers:
+            errors.append(
+                "Data Source has duplicate header '{}'; each column needs a "
+                "unique header.".format(name)
+            )
+        seen_headers.setdefault(key, []).append(name)
 
     header_set = set(headers)
     for f in fields:

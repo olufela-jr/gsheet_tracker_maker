@@ -127,7 +127,8 @@ function buildHowTo_(ss) {
 
   heading_(sheet, 'A6', '2. The setup tab: one row per field');
   para_(sheet, 'A7',
-    'A  Field: the field name; raw fields must match a data_source header exactly.\n' +
+    'A  Field: the field name; raw fields must match a data_source header exactly. ' +
+    'Names and headers must be unique.\n' +
     'B  Type: metric, dimension, or date (tag exactly one field as date).\n' +
     'C  Formula: optional [Field]-token expression for a calculated metric, e.g. [Spend]/[Clicks].\n' +
     'D  Format: optional number format: currency, percent, or number.\n' +

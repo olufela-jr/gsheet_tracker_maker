@@ -241,6 +241,40 @@ class TestValidate:
             validate(client, DEFAULT_CONFIG)
         assert any("Ghost" in e for e in exc.value.errors)
 
+    def test_duplicate_setup_field_name(self):
+        # A dimension and the date field sharing a name is ambiguous: the
+        # SUMIFS named range can only bind to one column.
+        setup = [
+            ["week", "date", "", "", ""],
+            ["week", "dimension", "", "", "TRUE"],
+            ["Spend", "metric", "", "", ""],
+        ]
+        client = FakeReader(setup, ["week", "Spend"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("declares 'week' more than once" in e for e in exc.value.errors)
+
+    def test_setup_names_colliding_after_sanitising(self):
+        setup = [
+            ["Day", "date", "", "", ""],
+            ["Campaign Name", "dimension", "", "", "TRUE"],
+            ["campaign_name", "dimension", "", "", "TRUE"],
+            ["Spend", "metric", "", "", ""],
+        ]
+        client = FakeReader(
+            setup, ["Day", "Campaign Name", "campaign_name", "Spend"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("collide" in e and "Campaign Name" in e
+                   for e in exc.value.errors)
+
+    def test_duplicate_data_source_header(self):
+        setup = [["Day", "date", "", ""], ["Spend", "metric", "", ""]]
+        client = FakeReader(setup, ["Day", "Spend", "Day"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("duplicate header 'Day'" in e for e in exc.value.errors)
+
     def test_calc_referencing_unknown_field(self):
         setup = [["Day", "date", "", ""], ["X", "metric", "[Nope]", ""]]
         client = FakeReader(setup, ["Day"])
