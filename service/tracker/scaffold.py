@@ -251,8 +251,9 @@ def scaffold(client, cfg):
     created_setup = cfg.setup_tab.lower() in {m.lower() for m in missing}
     if created_setup:
         client.write_values(
-            a1(cfg.setup_tab, "A1:F1"),
-            [["Field", "Type", "Formula", "Format", "Show in views", "Break-out table"]],
+            a1(cfg.setup_tab, "A1:G1"),
+            [["Field", "Type", "Formula", "Format", "Show in views",
+              "Break-out table", "Mapping"]],
             value_input_option="RAW",
         )
 

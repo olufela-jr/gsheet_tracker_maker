@@ -357,7 +357,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
     if setup_sheet_id is not None:
         requests.append(
             _format(
-                setup_sheet_id, 0, 1, 0, 6,
+                setup_sheet_id, 0, 1, 0, 7,
                 {"backgroundColor": BANNER_BG, "textFormat": _text(10, BANNER_TEXT, bold=True)},
                 "userEnteredFormat(backgroundColor,textFormat)",
             )
@@ -365,7 +365,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(_freeze_header(setup_sheet_id))
         requests.append(_col_width(setup_sheet_id, 0, 1, 220))
         requests.append(_col_width(setup_sheet_id, 1, 2, 120))
-        requests.append(_col_width(setup_sheet_id, 4, 6, 120))
+        requests.append(_col_width(setup_sheet_id, 4, 7, 120))
         requests.append(
             _note(setup_sheet_id, 0, 0, "Field must exactly match a header in data_source.")
         )
@@ -384,11 +384,20 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                 "value of this dimension) to every view. Independent of Show.",
             )
         )
-        # Checkboxes down the Show and Break-out columns so the toggles are obvious.
+        requests.append(
+            _note(
+                setup_sheet_id, 0, 6,
+                "Dimensions only: check to list this dimension's values in "
+                "the mapping tab. Show / Break-out imply it; leave all three "
+                "blank to keep a high-cardinality dimension out of Mapping.",
+            )
+        )
+        # Checkboxes down the Show, Break-out and Mapping columns so the
+        # toggles are obvious.
         requests.append(
             {
                 "setDataValidation": {
-                    "range": _grid(setup_sheet_id, 1, 1000, 4, 6),
+                    "range": _grid(setup_sheet_id, 1, 1000, 4, 7),
                     "rule": {
                         "condition": {"type": "BOOLEAN"},
                         "showCustomUi": True,

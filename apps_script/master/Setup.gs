@@ -133,30 +133,33 @@ function buildHowTo_(ss) {
     'C  Formula: optional [Field]-token expression for a calculated metric, e.g. [Spend]/[Clicks].\n' +
     'D  Format: optional number format: currency, percent, or number.\n' +
     'E  Show in views: dimensions only; check to add it as a filter dropdown (slicer) on ' +
-    'the views. Every dimension gets a mapping column either way.\n' +
-    'F  Break-out table: dimensions only; check to add a totals-per-value table for it on every view.');
-  sheet.setRowHeight(7, 140);
+    'the views.\n' +
+    'F  Break-out table: dimensions only; check to add a totals-per-value table for it on every view.\n' +
+    'G  Mapping: dimensions only; check to list its values in the mapping tab. ' +
+    'Show / Break-out imply it; leave all three blank to keep a high-cardinality ' +
+    'dimension out of Mapping.');
+  sheet.setRowHeight(7, 160);
 
   heading_(sheet, 'A9', '3. Example setup');
   var example = [
-    ['Field', 'Type', 'Formula', 'Format', 'Show in views', 'Break-out table'],
-    ['Day', 'date', '', '', '', ''],
-    ['Region', 'dimension', '', '', 'TRUE', 'TRUE'],
-    ['Channel', 'dimension', '', '', '', ''],
-    ['Market', 'dimension', '', '', '', 'TRUE'],
-    ['Spend', 'metric', '', 'currency', '', ''],
-    ['Clicks', 'metric', '', 'number', '', ''],
-    ['CPC', 'metric', '[Spend]/[Clicks]', 'currency', '', '']
+    ['Field', 'Type', 'Formula', 'Format', 'Show in views', 'Break-out table', 'Mapping'],
+    ['Day', 'date', '', '', '', '', ''],
+    ['Region', 'dimension', '', '', 'TRUE', 'TRUE', ''],
+    ['Channel', 'dimension', '', '', '', '', 'TRUE'],
+    ['Market', 'dimension', '', '', '', 'TRUE', ''],
+    ['Spend', 'metric', '', 'currency', '', '', ''],
+    ['Clicks', 'metric', '', 'number', '', '', ''],
+    ['CPC', 'metric', '[Spend]/[Clicks]', 'currency', '', '', '']
   ];
-  sheet.getRange(10, 1, example.length, 6).setValues(example);
-  sheet.getRange(10, 1, 1, 6)
+  sheet.getRange(10, 1, example.length, 7).setValues(example);
+  sheet.getRange(10, 1, 1, 7)
     .setBackground(NAVY).setFontColor(WHITE).setFontWeight('bold');
-  sheet.getRange(10, 1, example.length, 6)
+  sheet.getRange(10, 1, example.length, 7)
     .setBorder(true, true, true, true, true, true, BORDER,
                SpreadsheetApp.BorderStyle.SOLID);
   para_(sheet, 'A19',
-    'Channel has Show blank, so it keeps its mapping column but gets no filter ' +
-    'dropdown on the views. Region and Market have Break-out table checked, so each gets its own ' +
+    'Channel has only Mapping checked, so its values are listed in the mapping ' +
+    'tab but it gets no filter dropdown or break-out. Region and Market have Break-out table checked, so each gets its own ' +
     'totals-per-value table. Rows render in this order, so a calculated metric ' +
     'like CPC shows exactly where you place it.');
   sheet.setRowHeight(19, 44);
@@ -200,6 +203,7 @@ function buildHowTo_(ss) {
   sheet.setColumnWidth(4, 90);
   sheet.setColumnWidth(5, 110);
   sheet.setColumnWidth(6, 120);
+  sheet.setColumnWidth(7, 100);
 }
 
 /** Ensure a Log tab exists with a header; adopt the old Admin tab if present. */

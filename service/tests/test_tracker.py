@@ -363,21 +363,27 @@ class TestBreakoutColumn:
         assert dimensions_of(fields) == ["Region", "Channel"]
         assert breakout_dimensions_of(fields) == ["Region", "Market"]
 
-    def test_mapping_covers_every_dimension(self):
-        # Mapping is independent of Show/Break-out: every dimension gets a
-        # column, so toggling a slicer never reshapes the Mapping tab.
+    def test_mapping_covers_shown_broken_out_or_flagged(self):
+        # Show and Break-out imply a mapping column (their dropdowns and row
+        # labels source from it); the Mapping box adds one for a dimension
+        # with neither, and a dimension with all three blank stays out of
+        # Mapping entirely (e.g. thousands of campaign names).
         setup = [
-            ["Day", "date", "", "", "", ""],
-            ["Region", "dimension", "", "", "TRUE", "TRUE"],
-            ["Channel", "dimension", "", "", "TRUE", ""],
-            ["Market", "dimension", "", "", "", "TRUE"],
-            ["Hidden", "dimension", "", "", "", ""],  # no slicer, still mapped
-            ["Spend", "metric", "", "", "", ""],
+            ["Day", "date", "", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "TRUE", ""],
+            ["Channel", "dimension", "", "", "TRUE", "", ""],
+            ["Market", "dimension", "", "", "", "TRUE", ""],
+            ["Listed", "dimension", "", "", "", "", "TRUE"],  # flag only
+            ["Heavy", "dimension", "", "", "", "", ""],  # stays unmapped
+            ["Spend", "metric", "", "", "", "", ""],
         ]
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
         assert mapping_dimensions_of(fields) == [
-            "Region", "Channel", "Market", "Hidden"
+            "Region", "Channel", "Market", "Listed"
         ]
+        by_name = {f.name: f for f in fields}
+        assert by_name["Listed"].mapping is True
+        assert by_name["Heavy"].mapping is False
 
 
 class TestDistinctValues:

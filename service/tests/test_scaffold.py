@@ -87,7 +87,7 @@ class TestScaffold:
         scaffold(new, DEFAULT_CONFIG)
         assert any(
             v == [["Field", "Type", "Formula", "Format", "Show in views",
-                   "Break-out table"]]
+                   "Break-out table", "Mapping"]]
             for _, v, _ in new.writes
         )
 

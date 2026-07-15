@@ -21,10 +21,13 @@ from .formulas import formula_tokens
 #            hides it from the front end (Setup column E)
 #   breakout: dimensions only — True gives the dimension its own break-out
 #            table (totals per value) stacked on every view (Setup column F)
+#   mapping: dimensions only — True lists the dimension's values in Mapping
+#            even when it is neither shown nor broken out (Setup column G;
+#            Show / Break-out imply a mapping column regardless)
 Field = namedtuple(
     "Field",
-    ["name", "type", "formula", "fmt", "show", "breakout"],
-    defaults=(False, False),
+    ["name", "type", "formula", "fmt", "show", "breakout", "mapping"],
+    defaults=(False, False, False),
 )
 
 
@@ -55,9 +58,11 @@ def read_setup(client, cfg):
     Columns: A name, B type, C formula (calculated metrics), D format hint,
     E show (dimensions only — checked shows the dimension as a filter in the
     views, blank hides it), F break-out (dimensions only — checked gives the
-    dimension its own totals-per-value table on every view).
+    dimension its own totals-per-value table on every view), G mapping
+    (dimensions only — checked lists the values in Mapping even without
+    Show / Break-out).
     """
-    rows = client.read_range(a1(cfg.setup_tab, "A2:F"))
+    rows = client.read_range(a1(cfg.setup_tab, "A2:G"))
     fields = []
     for row in rows:
         if not row:
@@ -73,6 +78,7 @@ def read_setup(client, cfg):
                 fmt=_cell(row, 3).lower(),
                 show=_truthy(_cell(row, 4)),
                 breakout=_truthy(_cell(row, 5)),
+                mapping=_truthy(_cell(row, 6)),
             )
         )
     return fields
@@ -103,15 +109,18 @@ def breakout_dimensions_of(fields):
 
 
 def mapping_dimensions_of(fields):
-    """All dimensions, in Setup order: every one gets a mapping column.
+    """Dimensions that get a Mapping column, in Setup order.
 
-    Mapping is independent of Show — the Show box only controls which
-    dimensions appear as slicers on the views. Keeping a column of distinct
-    values per dimension means hiding/showing a slicer never reshapes the
-    Mapping tab, and every dimension's values stay available to drive
-    dropdowns and break-out labels.
+    Shown and broken-out dimensions always need one (their slicer dropdowns
+    and break-out row labels source from it); the Mapping box adds a values
+    column for a dimension that has neither, and leaving all three blank
+    keeps a high-cardinality dimension out of the Mapping tab entirely.
     """
-    return [f.name for f in fields if f.type == "dimension"]
+    return [
+        f.name
+        for f in fields
+        if f.type == "dimension" and (f.show or f.breakout or f.mapping)
+    ]
 
 
 def date_field_of(fields):
