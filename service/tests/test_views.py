@@ -104,16 +104,16 @@ class TestBuildView:
         assert result["metrics"] == ["Spend", "Clicks", "CPC"]
 
         # Header row one: the Year dropdown defaulting to the current year.
-        # (Header 3-4, compare 6-9, KPI 11-12, matrix 14-16+.)
+        # (Header 3-4, KPI 6-7, compare 9-12, matrix 14-16+.)
         year = client._find_write(client.formula_writes, "A3")
         assert year == [["Year", "=YEAR(TODAY())"]]
 
         # KPI header row: "Totals" + metric names.
-        kpi = client._find_write(client.raw_writes, "A11")
+        kpi = client._find_write(client.raw_writes, "A6")
         assert kpi == [["Totals", "Spend", "Clicks", "CPC"]]
 
         # KPI value row: grand totals (calc uses IFERROR + division).
-        grand = client._find_write(client.formula_writes, "B12")[0]
+        grand = client._find_write(client.formula_writes, "B7")[0]
         assert grand[0].startswith("=SUMIFS(Spend")
         assert grand[2].startswith('=IFERROR(SUMIFS(Spend')
         assert "/SUMIFS(Clicks" in grand[2]
@@ -154,14 +154,14 @@ class TestBuildView:
         assert year_dds[0]["range"]["startRowIndex"] == 2
         assert year_dds[0]["range"]["startColumnIndex"] == 1
 
-    def test_monthly_compare_block_below_the_slicers(self):
+    def test_monthly_compare_block_below_the_totals(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
-        # The comparison block sits below the header (slicer grid at row 4),
-        # with no label column: just From | To | metrics.
-        header = client._find_write(client.raw_writes, "A6")
+        # The comparison block sits below the KPI Totals (rows 6-7), with no
+        # label column: just From | To | metrics.
+        header = client._find_write(client.raw_writes, "A9")
         assert header == [["From", "To", "Spend", "Clicks", "CPC"]]
-        rows = client._find_write(client.formula_writes, "A7")
+        rows = client._find_write(client.formula_writes, "A10")
         # The date cells start blank (no defaults); "% change" labels the
         # bottom row in the From column.
         assert rows[0][:2] == ["", ""]
@@ -170,14 +170,14 @@ class TestBuildView:
         # Totals are date-ranged SUMIFS filtered by the slicer cell (B4)
         # above, blank until both dates of the row are picked.
         spend_a = rows[0][2]
-        assert spend_a.startswith('=IF(OR($A7="",$B7=""),"",SUMIFS(Spend')
-        assert '">="&$A7' in spend_a and '"<"&($B7+1)' in spend_a
+        assert spend_a.startswith('=IF(OR($A10="",$B10=""),"",SUMIFS(Spend')
+        assert '">="&$A10' in spend_a and '"<"&($B10+1)' in spend_a
         assert "IF(B4=" in spend_a
         # % change per metric underneath, comparing the two rows.
         assert rows[2][2:] == [
-            '=IFERROR((C8-C7)/C7, "")',
-            '=IFERROR((D8-D7)/D7, "")',
-            '=IFERROR((E8-E7)/E7, "")',
+            '=IFERROR((C11-C10)/C10, "")',
+            '=IFERROR((D11-D10)/D10, "")',
+            '=IFERROR((E11-E10)/E10, "")',
         ]
         # The From/To cells are dropdowns of the Mapping date column (the
         # column after the one mapped dimension, so 'mapping'!B).
@@ -251,7 +251,7 @@ class TestBuildView:
         defaults = client._find_write(client.formula_writes, "A3")
         assert defaults == [["Date from", "=TODAY()-28", "Date to", "=TODAY()-1"]]
         # Compare block date cells start blank (dropdowns, no defaults).
-        rows = client._find_write(client.formula_writes, "A7")
+        rows = client._find_write(client.formula_writes, "A10")
         assert rows[0][:2] == ["", ""]
         assert rows[1][:2] == ["", ""]
         # Matrix data at A16: Monday week-starts, newest first, blanking
@@ -317,9 +317,9 @@ class TestBuildView:
         assert row1 == [["Region", s, "Market", s, "Channel", s, "OS", s]]
         row2 = client._find_write(client.raw_writes, "A5")
         assert row2 == [["Language", s]]
-        # A three-row header pushes the compare block and KPI strip down one:
-        # compare at 7-10, KPI at 12.
-        assert client._find_write(client.raw_writes, "A12") == [["Totals", "Spend"]]
+        # A three-row header pushes the KPI strip (now directly below the
+        # header) down one row: Totals at 7.
+        assert client._find_write(client.raw_writes, "A7") == [["Totals", "Spend"]]
 
     def test_breakout_table_rendered(self):
         client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="TRUE")

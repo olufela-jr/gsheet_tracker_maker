@@ -2,12 +2,12 @@
 
 A view is a stack of blocks, top to bottom: a title banner; the header (a
 date-controls row, then the slicer pairs — dimension | dropdown, four to a
-row — with live Today and days-left-in-month stat cells at the right); on
-the weekly and monthly views the comparison block (two From/To date ranges
-side by side with the per-metric totals for each and a % change row
-underneath, filtered by the slicers); a KPI strip of slicer-filtered grand
-totals; the by-period block; then one break-out block per flagged dimension
-(totals per value). The monthly view also gets a line chart.
+row — with live Today and days-left-in-month stat cells at the right); a
+KPI strip of slicer-filtered grand totals; on the weekly and monthly views
+the comparison block (two From/To date ranges side by side with the
+per-metric totals for each and a % change row underneath, filtered by the
+slicers); the by-period block; then one break-out block per flagged
+dimension (totals per value). The monthly view also gets a line chart.
 
 The matrix's period column is a formula-driven window scoped by the tab's
 date controls. Daily's Date from / Date to are dropdowns of the available
@@ -308,7 +308,7 @@ def _add_kpi_strip(page, v, dim_specs):
 def _add_compare_block(page, v, dim_specs):
     """Two From/To date ranges side by side, with % change underneath.
 
-    Sits just below the header; the totals are filtered by the slicer
+    Sits just below the KPI Totals; the totals are filtered by the slicer
     dropdowns above (dim_specs), so one slice is compared across the two
     ranges. The date cells are dropdowns of the available dates (from the
     Mapping date column), blank by default — a row's totals and the % change
@@ -495,8 +495,8 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
 
     _add_title(page, v)
     dim_specs, drop_positions, pickers = _add_filter_header(page, v)
-    _add_compare_block(page, v, dim_specs)
     _add_kpi_strip(page, v, dim_specs)
+    _add_compare_block(page, v, dim_specs)
     matrix = _add_period_matrix(page, v, dim_specs, pickers)
     _add_breakout_tables(page, v, dim_specs)
     _add_dropdowns(page, v, drop_positions)

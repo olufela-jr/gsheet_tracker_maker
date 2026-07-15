@@ -178,7 +178,7 @@ function buildHowTo_(ss) {
     'dropdown of the years in your data (defaulting to the current year) ' +
     'with months past today left blank. Weekly and monthly also get a ' +
     'comparison block just below the ' +
-    'slicers: two From/To date ranges side by side per metric with a % change ' +
+    'KPI totals: two From/To date ranges side by side per metric with a % change ' +
     'row underneath; the dates are dropdowns of the available dates and the ' +
     'rows fill in once both are picked. ' +
     'Any dimension flagged Break-out table gets its own totals-per-value ' +
