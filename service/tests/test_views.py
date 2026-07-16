@@ -112,11 +112,11 @@ class TestBuildView:
         kpi = client._find_write(client.raw_writes, "A6")
         assert kpi == [["Totals", "Spend", "Clicks", "CPC"]]
 
-        # KPI value row: grand totals (calc uses IFERROR + division).
+        # KPI value row: raw metrics are SUMIFS; the calculated CPC simply
+        # divides the sibling cells (which already respond to the slicers).
         grand = client._find_write(client.formula_writes, "B7")[0]
         assert grand[0].startswith("=SUMIFS(Spend")
-        assert grand[2].startswith('=IFERROR(SUMIFS(Spend')
-        assert "/SUMIFS(Clicks" in grand[2]
+        assert grand[2] == '=IFERROR(B7/C7, "")'
 
         # The period column anchors on 1 January of the picked year and steps
         # forward one month per row, going blank once past the current month.
@@ -173,6 +173,11 @@ class TestBuildView:
         assert spend_a.startswith('=IF(OR($A10="",$B10=""),"",SUMIFS(Spend')
         assert '">="&$A10' in spend_a and '"<"&($B10+1)' in spend_a
         assert "IF(B4=" in spend_a
+        # The calculated CPC column divides its row's sibling cells, inside
+        # the same both-dates-picked guard.
+        assert rows[0][4] == (
+            '=IF(OR($A10="",$B10=""),"",IFERROR(C10/D10, ""))'
+        )
         # % change per metric underneath, comparing the two rows.
         assert rows[2][2:] == [
             '=IFERROR((C11-C10)/C10, "")',
@@ -239,9 +244,12 @@ class TestBuildView:
         assert periods[1] == [
             '=IF(A11="","",IF(A11-1<IF($B$3="",$A$11-13,$B$3),"",A11-1))'
         ]
-        # Metric cells blank alongside their period cell.
+        # Metric cells blank alongside their period cell; the calculated CPC
+        # references its row's sibling cells inside the same guard.
         matrix = client._find_write(client.formula_writes, "B11")
         assert matrix[0][0].startswith('=IF(A11="","",SUMIFS(Spend')
+        assert matrix[0][2] == '=IF(A11="","",IFERROR(B11/C11, ""))'
+        assert matrix[1][2] == '=IF(A12="","",IFERROR(B12/C12, ""))'
 
     def test_weekly_window_follows_the_date_pickers(self):
         client = _client(DEFAULT_CONFIG.weekly_tab)
@@ -396,6 +404,10 @@ class TestComparison:
         assert '">="&B' in spend_a and '"<"&(B' in spend_a
         assert "Region, IF(" in spend_a
         assert rows[0][2].startswith("=IFERROR((C")  # % diff
+        # The calculated CPC row references the sibling metric rows per side
+        # (metrics render as rows on this tab).
+        assert rows[2][0].startswith("=IFERROR(B")
+        assert "/B" in rows[2][0] and "SUMIFS" not in rows[2][0]
 
     def test_trend_helper_and_chart(self):
         client = self._client()

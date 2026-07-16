@@ -10,6 +10,9 @@ from tracker import (
     PERIOD_ROWS,
     ValidationError,
     blank_guarded,
+    calc_cell_formula,
+    is_calculated,
+    metric_fields_of,
     bucket_serial,
     bucket_sumifs_expr,
     build_calc_formula,
@@ -134,6 +137,32 @@ class TestPeriodWindows:
         )
 
 
+class TestCalculatedFields:
+    def test_calc_cell_formula_uses_sibling_cells(self):
+        cells = {"Spend": "B7", "Clicks": "C7"}
+        assert calc_cell_formula("[Spend]/[Clicks]", cells.__getitem__) == (
+            '=IFERROR(B7/C7, "")'
+        )
+
+    def test_calculated_type_is_parsed_and_selected(self):
+        setup = [
+            ["Day", "date", "", "", "", "", ""],
+            ["Spend", "metric", "", "currency", "", "", ""],
+            ["CPC", "Calculated field", "[Spend]/[Clicks]", "currency", "", "", ""],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day", "Spend"]), DEFAULT_CONFIG)
+        by_name = {f.name: f for f in fields}
+        assert by_name["CPC"].type == "calculated"
+        assert is_calculated(by_name["CPC"])
+        assert not is_calculated(by_name["Spend"])
+        # Calculated fields render alongside metrics, in Setup order.
+        assert [f.name for f in metric_fields_of(fields)] == ["Spend", "CPC"]
+
+    def test_legacy_metric_with_formula_counts_as_calculated(self):
+        f = Field(name="CPC", type="metric", formula="[Spend]/[Clicks]", fmt="")
+        assert is_calculated(f)
+
+
 class TestSumifsExpr:
     def test_no_dims_is_sum(self):
         assert sumifs_expr("Spend", []) == "SUM(Spend)"
@@ -240,6 +269,48 @@ class TestValidate:
         with pytest.raises(ValidationError) as exc:
             validate(client, DEFAULT_CONFIG)
         assert any("Ghost" in e for e in exc.value.errors)
+
+    def test_unknown_type_rejected(self):
+        setup = [
+            ["Day", "date", "", ""],
+            ["Spend", "metrc", "", ""],  # typo
+        ]
+        client = FakeReader(setup, ["Day", "Spend"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("unknown type 'metrc'" in e for e in exc.value.errors)
+
+    def test_calculated_without_formula_rejected(self):
+        setup = [
+            ["Day", "date", "", ""],
+            ["Spend", "metric", "", ""],
+            ["CPC", "calculated", "", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("no formula" in e for e in exc.value.errors)
+
+    def test_calculated_referencing_a_dimension_rejected(self):
+        setup = [
+            ["Day", "date", "", ""],
+            ["Region", "dimension", "", ""],
+            ["Spend", "metric", "", ""],
+            ["Weird", "calculated", "[Spend]/[Region]", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Region", "Spend"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("not a metric" in e for e in exc.value.errors)
+
+    def test_calculated_type_skips_header_check(self):
+        setup = [
+            ["Day", "date", "", ""],
+            ["Spend", "metric", "", ""],
+            ["CPS", "calculated", "[Spend]/[Spend]", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend"])  # CPS not a header: fine
+        validate(client, DEFAULT_CONFIG)  # no raise
 
     def test_duplicate_setup_field_name(self):
         # A dimension and the date field sharing a name is ambiguous: the

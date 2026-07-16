@@ -129,8 +129,9 @@ function buildHowTo_(ss) {
   para_(sheet, 'A7',
     'A  Field: the field name; raw fields must match a data_source header exactly. ' +
     'Names and headers must be unique.\n' +
-    'B  Type: metric, dimension, or date (tag exactly one field as date).\n' +
-    'C  Formula: optional [Field]-token expression for a calculated metric, e.g. [Spend]/[Clicks].\n' +
+    'B  Type: metric, dimension, date (tag exactly one field as date), or calculated.\n' +
+    'C  Formula: the [Field]-token expression for a calculated field, e.g. [Spend]/[Clicks]. ' +
+    'Its cells simply compute from the metric cells beside them, so it follows every slicer.\n' +
     'D  Format: optional number format: currency, percent, or number.\n' +
     'E  Show in views: dimensions only; check to add it as a filter dropdown (slicer) on ' +
     'the views.\n' +
@@ -149,7 +150,7 @@ function buildHowTo_(ss) {
     ['Market', 'dimension', '', '', '', 'TRUE', ''],
     ['Spend', 'metric', '', 'currency', '', '', ''],
     ['Clicks', 'metric', '', 'number', '', '', ''],
-    ['CPC', 'metric', '[Spend]/[Clicks]', 'currency', '', '', '']
+    ['CPC', 'calculated', '[Spend]/[Clicks]', 'currency', '', '', '']
   ];
   sheet.getRange(10, 1, example.length, 7).setValues(example);
   sheet.getRange(10, 1, 1, 7)

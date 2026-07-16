@@ -45,7 +45,9 @@ from .fields import (
     breakout_dimensions_of,
     date_field_of,
     dimensions_of,
+    is_calculated,
     mapping_dimensions_of,
+    metric_fields_of,
     read_data_source_headers,
     read_setup,
 )
@@ -58,6 +60,7 @@ from .formulas import (
     blank_guarded,
     breakout_formula,
     bucket_formula,
+    calc_cell_formula,
     grand_total_formula,
     number_format_pattern,
     period_next_formula,
@@ -106,7 +109,7 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers,
         fields = read_setup(client, cfg)
     if headers is None:
         headers = read_data_source_headers(client, cfg)
-    metric_fields = [f for f in fields if f.type == "metric"]
+    metric_fields = metric_fields_of(fields)
     dimensions = dimensions_of(fields)
     breakouts = breakout_dimensions_of(fields)
     mapping_dims = mapping_dimensions_of(fields)
@@ -144,7 +147,7 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers,
         years_src=years_src,
         metric_fields=metric_fields,
         metric_names=[m.name for m in metric_fields],
-        metrics_meta=[(bool(m.formula), number_format_pattern(m.fmt))
+        metrics_meta=[(is_calculated(m), number_format_pattern(m.fmt))
                       for m in metric_fields],
         dimensions=dimensions,
         breakouts=breakouts,
@@ -282,6 +285,16 @@ def _add_filter_header(page, v):
     return dim_specs, drop_positions, pickers
 
 
+def _metric_cell_of(v, first_col, row):
+    """cell_of(name) for calc_cell_formula: a sibling metric cell in `row`.
+
+    first_col is the 1-based column of the block's first metric; each metric
+    occupies one column in Setup order.
+    """
+    index = {m.name: i for i, m in enumerate(v.metric_fields)}
+    return lambda name: "{}{}".format(column_to_letter(first_col + index[name]), row)
+
+
 def _add_kpi_strip(page, v, dim_specs):
     """Dimension-filtered grand totals, one per metric (no date bucket)."""
     if not v.has_metrics:
@@ -289,9 +302,12 @@ def _add_kpi_strip(page, v, dim_specs):
     label_row = page.row
     value_row = page.row + 1
     page.write("A{}".format(label_row), [["Totals"] + v.metric_names])
+    cell_of = _metric_cell_of(v, 2, value_row)
     page.write_formulas(
         "B{}".format(value_row),
-        [[grand_total_formula(m, dim_specs, v.sentinel) for m in v.metric_fields]],
+        [[calc_cell_formula(m.formula, cell_of) if is_calculated(m)
+          else grand_total_formula(m, dim_specs, v.sentinel)
+          for m in v.metric_fields]],
     )
 
     page.fmt.append(theme.header_row(page.sheet_id, label_row - 1, 0, v.kpi_last_col))
@@ -325,9 +341,12 @@ def _add_compare_block(page, v, dim_specs):
     def totals(row):
         lower = '">="&$A{}'.format(row)
         upper = '"<"&($B{}+1)'.format(row)
+        cell_of = _metric_cell_of(v, 3, row)
         return [
             range_guarded(
-                between_formula(m, v.date_range, lower, upper, dim_specs, v.sentinel),
+                calc_cell_formula(m.formula, cell_of) if is_calculated(m)
+                else between_formula(m, v.date_range, lower, upper,
+                                     dim_specs, v.sentinel),
                 "$A{}".format(row), "$B{}".format(row),
             )
             for m in v.metric_fields
@@ -397,11 +416,14 @@ def _add_period_matrix(page, v, dim_specs, pickers):
 
     matrix = []
     for j in range(v.num_periods):
-        cell = "A{}".format(first_data + j)
+        prow = first_data + j
+        cell = "A{}".format(prow)
+        cell_of = _metric_cell_of(v, 2, prow)
         matrix.append([
             blank_guarded(
-                bucket_formula(m, v.date_range, cell, v.granularity,
-                               dim_specs, v.sentinel),
+                calc_cell_formula(m.formula, cell_of) if is_calculated(m)
+                else bucket_formula(m, v.date_range, cell, v.granularity,
+                                    dim_specs, v.sentinel),
                 cell,
             )
             for m in v.metric_fields
@@ -446,9 +468,14 @@ def _add_breakout_tables(page, v, dim_specs):
             page.write("A{}".format(first_data), [[val] for val in vals])
             block = []
             for k, val_ in enumerate(vals):
-                vcell = "A{}".format(first_data + k)
-                block.append([breakout_formula(m, bd_range, vcell, other_specs, v.sentinel)
-                              for m in v.metric_fields])
+                vrow = first_data + k
+                vcell = "A{}".format(vrow)
+                cell_of = _metric_cell_of(v, 2, vrow)
+                block.append([
+                    calc_cell_formula(m.formula, cell_of) if is_calculated(m)
+                    else breakout_formula(m, bd_range, vcell, other_specs, v.sentinel)
+                    for m in v.metric_fields
+                ])
             page.write_formulas("B{}".format(first_data), block)
 
         page.fmt.append(theme.section_title(page.sheet_id, title_row - 1, v.kpi_last_col))

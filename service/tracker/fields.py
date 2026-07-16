@@ -13,8 +13,8 @@ from .formulas import formula_tokens
 
 # One declared field in the Setup tab.
 #   name:    field name (Setup column A)
-#   type:    "metric" | "dimension" | "date" (column B)
-#   formula: bracket-token expression for a calculated metric, or "" for raw (C)
+#   type:    "metric" | "dimension" | "date" | "calculated" (column B)
+#   formula: bracket-token expression for a calculated field, or "" (C)
 #   fmt:     "currency" | "percent" | "number" | "" number format hint (D)
 #   show:    dimensions only — True shows the dimension as a filter in the
 #            daily/weekly/monthly views; blank/False keeps it in the data but
@@ -70,10 +70,13 @@ def read_setup(client, cfg):
         name = _cell(row, 0)
         if not name:
             continue
+        ftype = _cell(row, 1).lower()
+        if ftype.startswith("calc"):  # "calculated", "calculated field", "calc"
+            ftype = "calculated"
         fields.append(
             Field(
                 name=name,
-                type=_cell(row, 1).lower(),
+                type=ftype,
                 formula=_cell(row, 2),
                 fmt=_cell(row, 3).lower(),
                 show=_truthy(_cell(row, 4)),
@@ -84,8 +87,20 @@ def read_setup(client, cfg):
     return fields
 
 
+def is_calculated(field):
+    """True for the calculated type, or a legacy metric carrying a formula."""
+    return field.type == "calculated" or (
+        field.type == "metric" and bool(field.formula)
+    )
+
+
+def metric_fields_of(fields):
+    """Metric and calculated fields, in Setup order (they render together)."""
+    return [f for f in fields if f.type in ("metric", "calculated")]
+
+
 def metrics_of(fields):
-    return [f.name for f in fields if f.type == "metric"]
+    return [f.name for f in metric_fields_of(fields)]
 
 
 def dimensions_of(fields):
@@ -196,9 +211,21 @@ def validate(client, cfg):
             )
         seen_headers.setdefault(key, []).append(name)
 
+    valid_types = ("metric", "dimension", "date", "calculated")
     header_set = set(headers)
     for f in fields:
-        if f.formula:
+        if f.type not in valid_types:
+            errors.append(
+                "Setup field '{}' has unknown type '{}'; use one of {}."
+                .format(f.name, f.type, ", ".join(valid_types))
+            )
+            continue
+        if f.type == "calculated" and not f.formula:
+            errors.append(
+                "Calculated field '{}' has no formula; give it a [Field]-token "
+                "expression like [Spend]/[Clicks].".format(f.name)
+            )
+        if is_calculated(f):
             for token in formula_tokens(f.formula):
                 ref = by_name.get(token)
                 if ref is None:
@@ -206,10 +233,15 @@ def validate(client, cfg):
                         "Calculated field '{}' references unknown field '{}'."
                         .format(f.name, token)
                     )
-                elif ref.formula:
+                elif is_calculated(ref):
                     errors.append(
                         "Calculated field '{}' references another calculated "
                         "field '{}', which is not supported.".format(f.name, token)
+                    )
+                elif ref.type != "metric":
+                    errors.append(
+                        "Calculated field '{}' references '{}', which is not "
+                        "a metric.".format(f.name, token)
                     )
         elif headers and f.name not in header_set:
             errors.append(

@@ -369,7 +369,9 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(
             _note(setup_sheet_id, 0, 0, "Field must exactly match a header in data_source.")
         )
-        requests.append(_note(setup_sheet_id, 0, 1, 'Type is "metric" or "dimension".'))
+        requests.append(_note(
+            setup_sheet_id, 0, 1,
+            'Type is "metric", "dimension", "date", or "calculated".'))
         requests.append(
             _note(
                 setup_sheet_id, 0, 4,

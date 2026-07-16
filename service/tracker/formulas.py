@@ -244,6 +244,20 @@ def build_calc_formula(formula, resolve):
     return "=" + calc_expr(formula, resolve)
 
 
+def calc_cell_formula(formula, cell_of):
+    """A calculated field's cell: [Field] tokens become sibling cell refs.
+
+    The referenced metric cells live in the same block and already respond to
+    the slicers and date controls, so plain cell arithmetic (e.g. =B7/C7)
+    gives the same number as re-expanding the SUMIFS — with a formula a human
+    can read. cell_of(name) returns the sibling ref; IFERROR blanks
+    divide-by-zero. Used everywhere except the Comparison tab's trend helper,
+    which has no sibling metric cells to reference.
+    """
+    expr = _TOKEN_RE.sub(lambda m: cell_of(m.group(1).strip()), formula)
+    return '=IFERROR({}, "")'.format(expr)
+
+
 def _sumifs_between(metric_range, date_range, lower, upper, dim_specs, sentinel):
     """SUMIFS for a raw metric between two date-criteria strings, dropdown-filtered.
 
@@ -274,28 +288,20 @@ def between_formula(metric, date_range, lower, upper, dim_specs, sentinel):
 
 
 def grand_total_formula(metric, dim_specs, sentinel):
-    """The dimension-filtered grand total for a metric (no date bucket)."""
-    if metric.formula:
-        return build_calc_formula(
-            metric.formula,
-            lambda n: sumifs_expr(sanitise_name(n), dim_specs, sentinel),
-        )
+    """The dimension-filtered grand total for a raw metric (no date bucket).
+
+    Calculated fields never reach here: their cells are built by
+    calc_cell_formula from the sibling metric cells instead.
+    """
     return build_sumifs_formula(sanitise_name(metric.name), dim_specs, sentinel)
 
 
 def bucket_formula(metric, date_range, cell, granularity, dim_specs, sentinel):
-    """The per-bucket value for a metric, filtered by the dropdowns.
+    """The per-bucket value for a raw metric, filtered by the dropdowns.
 
-    `cell` names the bucket-start cell: a period cell in the matrix, or a
-    compare-block week/month picker. Either way the SUMIFS selects that bucket.
+    `cell` names the bucket-start cell in the period matrix. Calculated
+    fields never reach here (see calc_cell_formula).
     """
-    if metric.formula:
-        return build_calc_formula(
-            metric.formula,
-            lambda n: bucket_sumifs_expr(
-                sanitise_name(n), date_range, cell, granularity, dim_specs, sentinel
-            ),
-        )
     return "=" + bucket_sumifs_expr(
         sanitise_name(metric.name), date_range, cell, granularity, dim_specs, sentinel
     )
@@ -315,14 +321,10 @@ def _breakout_expr(metric_range, dim_range, value_cell, other_dim_specs, sentine
 
 
 def breakout_formula(metric, dim_range, value_cell, other_dim_specs, sentinel):
-    """The break-out cell for a metric at one dimension value."""
-    if metric.formula:
-        return build_calc_formula(
-            metric.formula,
-            lambda n: _breakout_expr(
-                sanitise_name(n), dim_range, value_cell, other_dim_specs, sentinel
-            ),
-        )
+    """The break-out cell for a raw metric at one dimension value.
+
+    Calculated fields never reach here (see calc_cell_formula).
+    """
     return "=" + _breakout_expr(
         sanitise_name(metric.name), dim_range, value_cell, other_dim_specs, sentinel
     )
@@ -331,8 +333,9 @@ def breakout_formula(metric, dim_range, value_cell, other_dim_specs, sentinel):
 # --- number formats --------------------------------------------------------
 
 _NUMBER_FORMATS = {"currency": "$#,##0", "percent": "0%", "number": "#,##0"}
-DATE_FORMAT = "d-mmm-yyyy"
-MONTH_FORMAT = "mmm-yyyy"
+# BigQuery-style dates: 2026-07-13 for days, 2026-07 for month rows.
+DATE_FORMAT = "yyyy-mm-dd"
+MONTH_FORMAT = "yyyy-mm"
 # Signed percent for period-on-period deltas: +40% / -12% / 0%.
 DELTA_FORMAT = "+0%;-0%;0%"
 

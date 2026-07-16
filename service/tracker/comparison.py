@@ -30,7 +30,9 @@ from .fields import (
     ValidationError,
     date_field_of,
     dimensions_of,
+    is_calculated,
     mapping_dimensions_of,
+    metric_fields_of,
     read_data_source_headers,
     read_setup,
 )
@@ -39,6 +41,7 @@ from .formulas import (
     DELTA_FORMAT,
     between_expr,
     between_formula,
+    calc_cell_formula,
     number_format_pattern,
 )
 from .scaffold import ensure_tab
@@ -92,7 +95,7 @@ def _comparison_inputs(client, cfg, fields, headers, serials):
         fields = read_setup(client, cfg)
     if headers is None:
         headers = read_data_source_headers(client, cfg)
-    metric_fields = [f for f in fields if f.type == "metric"]
+    metric_fields = metric_fields_of(fields)
     date_name = date_field_of(fields)
     if date_name is None:
         raise ValidationError(
@@ -111,7 +114,7 @@ def _comparison_inputs(client, cfg, fields, headers, serials):
         date_range=sanitise_name(date_name),
         metric_fields=metric_fields,
         metric_names=[m.name for m in metric_fields],
-        metrics_meta=[(bool(m.formula), number_format_pattern(m.fmt))
+        metrics_meta=[(is_calculated(m), number_format_pattern(m.fmt))
                       for m in metric_fields],
         dimensions=dimensions_of(fields),
         mapping_dims=mapping_dimensions_of(fields),
@@ -195,15 +198,25 @@ def _add_metrics_table(page, v, L, sides):
     if v.metric_fields:
         page.write("A{}".format(L.read_first_row),
                    [[name] for name in v.metric_names])
+        # Metrics render as rows here, so a calculated field references the
+        # sibling metric cells in the same column (one per side).
+        row_of = {m.name: L.read_first_row + i
+                  for i, m in enumerate(v.metric_fields)}
         rows = []
         for i, m in enumerate(v.metric_fields):
             rr = L.read_first_row + i
-            a_total = between_formula(
-                m, v.date_range, '">="&{}'.format(sides.fa),
-                '"<"&({}+1)'.format(sides.ta), sides.a_rel, v.sentinel)
-            b_total = between_formula(
-                m, v.date_range, '">="&{}'.format(sides.fb),
-                '"<"&({}+1)'.format(sides.tb), sides.b_rel, v.sentinel)
+            if is_calculated(m):
+                a_total = calc_cell_formula(
+                    m.formula, lambda n: "B{}".format(row_of[n]))
+                b_total = calc_cell_formula(
+                    m.formula, lambda n: "C{}".format(row_of[n]))
+            else:
+                a_total = between_formula(
+                    m, v.date_range, '">="&{}'.format(sides.fa),
+                    '"<"&({}+1)'.format(sides.ta), sides.a_rel, v.sentinel)
+                b_total = between_formula(
+                    m, v.date_range, '">="&{}'.format(sides.fb),
+                    '"<"&({}+1)'.format(sides.tb), sides.b_rel, v.sentinel)
             diff = '=IFERROR((C{r}-B{r})/B{r}, "")'.format(r=rr)
             rows.append([a_total, b_total, diff])
         page.write_formulas("B{}".format(L.read_first_row), rows)
