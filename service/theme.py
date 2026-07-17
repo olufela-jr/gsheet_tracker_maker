@@ -1,8 +1,8 @@
 """Visual theme for the view tabs and the input tabs.
 
-Deep navy banners and headers, a light-blue tint for totals and calculated
-columns, white value cells on a soft grey page, gridlines off, no merged cells
-anywhere. Each
+Bright blue banners and headers, an airy light-blue tint for totals and
+calculated columns, white value cells on a near-white page, gridlines off, no
+merged cells anywhere. Each
 view tab is a bucket x metric matrix with a filter bar and a KPI strip. All the
 colours and layout positions live here so the look can be changed in one place
 without touching the domain logic.
@@ -28,19 +28,19 @@ def rgb(hex_str):
     }
 
 
-# --- palette (deep navy headers, light-blue highlight, white cells) --------
-# Borrowed from the reference dashboard: #002060 headers, #D9E1F2 total-row
-# tint, white value cells on a soft #F3F3F3 page.
+# --- palette (bright blue headers, airy highlight, white cells) ------------
+# A glossy take on the reference dashboard: vivid #1A73E8 headers, #E8F0FE
+# total-row tint, white value cells on a near-white #F8F9FC page.
 
-PAGE_BG = rgb("F3F3F3")       # soft grey page
+PAGE_BG = rgb("F8F9FC")       # near-white page, faint cool tint
 CARD_BG = rgb("FFFFFF")
-BANNER_BG = rgb("002060")     # deep navy header
+BANNER_BG = rgb("1A73E8")     # vivid blue header
 BANNER_TEXT = rgb("FFFFFF")
-HIGHLIGHT = rgb("D9E1F2")     # light-blue tint (totals, calculated columns)
-ACCENT = rgb("002060")        # navy value text
+HIGHLIGHT = rgb("E8F0FE")     # airy light-blue tint (totals, calculated columns)
+ACCENT = rgb("1967D2")        # blue value text (darker step for legibility)
 MUTED_TEXT = rgb("5F6368")
 HEADING_TEXT = rgb("202124")
-BORDER = rgb("BFBFBF")
+BORDER = rgb("DCE3F1")
 FONT = "Arial"
 
 
@@ -153,8 +153,8 @@ def _num_format(sheet_id, r1, r2, c1, c2, pattern):
     )
 
 
-def _navy_header(sheet_id, r1, r2, c1, c2, size=9):
-    """A navy header cell run: white bold text, left aligned, no merge."""
+def _blue_header(sheet_id, r1, r2, c1, c2, size=9):
+    """A blue header cell run: white bold text, left aligned, no merge."""
     return _format(
         sheet_id, r1, r2, c1, c2,
         {
@@ -196,7 +196,7 @@ def hide_gridlines(sheet_id):
 
 
 def canvas(sheet_id, end_row, end_col):
-    """Soft-grey page background with Arial near-black text over the used area."""
+    """Near-white page background with Arial near-black text over the used area."""
     return _format(
         sheet_id, 0, end_row, 0, end_col,
         {"backgroundColor": PAGE_BG, "textFormat": _text(10, HEADING_TEXT)},
@@ -205,7 +205,7 @@ def canvas(sheet_id, end_row, end_col):
 
 
 def banner(sheet_id, row, end_col):
-    """A navy title bar (no merge) with white bold text on one row."""
+    """A blue title bar (no merge) with white bold text on one row."""
     return _format(
         sheet_id, row, row + 1, 0, end_col,
         {
@@ -220,7 +220,7 @@ def banner(sheet_id, row, end_col):
 
 
 def section_title(sheet_id, row, end_col):
-    """A bold navy caption over a by-period / compare / break-out section."""
+    """A bold blue caption over a by-period / compare / break-out section."""
     return _format(
         sheet_id, row, row + 1, 0, end_col,
         {"textFormat": _text(11, ACCENT, bold=True)},
@@ -229,8 +229,8 @@ def section_title(sheet_id, row, end_col):
 
 
 def header_row(sheet_id, row, c1, c2):
-    """A navy header run (one row)."""
-    return _navy_header(sheet_id, row, row + 1, c1, c2)
+    """A blue header run (one row)."""
+    return _blue_header(sheet_id, row, row + 1, c1, c2)
 
 
 def value_cells(sheet_id, r1, r2, c1, c2):
@@ -239,7 +239,7 @@ def value_cells(sheet_id, r1, r2, c1, c2):
 
 
 def kpi_values(sheet_id, row, c1, c2):
-    """Tinted bold-navy value cells that read as a Total row."""
+    """Tinted bold-blue value cells that read as a Total row."""
     return _format(
         sheet_id, row, row + 1, c1, c2,
         {"backgroundColor": HIGHLIGHT, "textFormat": _text(11, ACCENT, bold=True)},

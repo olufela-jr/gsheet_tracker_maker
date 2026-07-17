@@ -8,11 +8,11 @@
  * Edit the layout and palette here to change the control panel across instances.
  */
 
-var NAVY = '#1F3864';
+var BLUE = '#1a73e8';
 var WHITE = '#ffffff';
 var GREY = '#5f6368';
-var LIGHT = '#f1f3f4';
-var BORDER = '#c9d2e3';
+var LIGHT = '#f8f9fc';
+var BORDER = '#dce3f1';
 
 function setupMaster() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -48,7 +48,7 @@ function buildConsole_(ss) {
 
   // Navy banner across A1:D1, no merge (the title overflows across the row).
   sheet.getRange('A1:D1')
-    .setBackground(NAVY).setFontColor(WHITE).setFontSize(16)
+    .setBackground(BLUE).setFontColor(WHITE).setFontSize(16)
     .setFontWeight('bold').setFontFamily('Arial').setVerticalAlignment('middle');
   sheet.getRange('A1').setValue('Tracker Console');
   sheet.setRowHeight(1, 46);
@@ -67,7 +67,7 @@ function buildConsole_(ss) {
     ['A12', 'Last run']
   ];
   labels.forEach(function (pair) {
-    sheet.getRange(pair[0]).setValue(pair[1]).setFontWeight('bold').setFontColor(NAVY);
+    sheet.getRange(pair[0]).setValue(pair[1]).setFontWeight('bold').setFontColor(BLUE);
   });
   // Section subheader that also tells the operator how to create a new one.
   sheet.getRange('A6')
@@ -114,7 +114,7 @@ function buildHowTo_(ss) {
   sheet.setHiddenGridlines(true);
 
   sheet.getRange('A1:E1')
-    .setBackground(NAVY).setFontColor(WHITE).setFontSize(16)
+    .setBackground(BLUE).setFontColor(WHITE).setFontSize(16)
     .setFontWeight('bold').setFontFamily('Arial').setVerticalAlignment('middle');
   sheet.getRange('A1').setValue('How to set up a tracker');
   sheet.setRowHeight(1, 46);
@@ -154,7 +154,7 @@ function buildHowTo_(ss) {
   ];
   sheet.getRange(10, 1, example.length, 7).setValues(example);
   sheet.getRange(10, 1, 1, 7)
-    .setBackground(NAVY).setFontColor(WHITE).setFontWeight('bold');
+    .setBackground(BLUE).setFontColor(WHITE).setFontWeight('bold');
   sheet.getRange(10, 1, example.length, 7)
     .setBorder(true, true, true, true, true, true, BORDER,
                SpreadsheetApp.BorderStyle.SOLID);
@@ -219,7 +219,7 @@ function buildLog_(ss) {
   if (sheet.getLastRow() === 0) {
     sheet.getRange('A1:C1')
       .setValues([['Created', 'Client / Sub-brand', 'Tracker']])
-      .setBackground(NAVY).setFontColor(WHITE).setFontWeight('bold');
+      .setBackground(BLUE).setFontColor(WHITE).setFontWeight('bold');
     sheet.setFrozenRows(1);
   }
   sheet.setColumnWidth(1, 150);
@@ -229,7 +229,7 @@ function buildLog_(ss) {
 
 function heading_(sheet, a1, text) {
   sheet.getRange(a1).setValue(text)
-    .setFontWeight('bold').setFontColor(NAVY).setFontSize(12);
+    .setFontWeight('bold').setFontColor(BLUE).setFontSize(12);
 }
 
 function para_(sheet, a1, text) {
