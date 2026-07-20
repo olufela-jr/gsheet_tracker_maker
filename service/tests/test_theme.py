@@ -104,3 +104,34 @@ class TestInputTabFormat:
     def test_no_setup_requests_when_setup_not_created(self):
         requests = theme.input_tab_format_requests(None, None)
         assert requests == []
+
+
+class TestFormulaColumn:
+    def _setup_requests(self):
+        return theme.input_tab_format_requests(7, None)
+
+    def test_formula_column_is_plain_text(self):
+        # Left as a normal cell, Sheets reads a leading '=' as a live formula
+        # and rejects the [Field] bracket syntax with a parse error.
+        text_fmts = [
+            r["repeatCell"] for r in self._setup_requests()
+            if "repeatCell" in r
+            and r["repeatCell"]["cell"]["userEnteredFormat"]
+            .get("numberFormat", {}).get("type") == "TEXT"
+        ]
+        assert len(text_fmts) == 1
+        rng = text_fmts[0]["range"]
+        assert rng["startColumnIndex"] == 2  # column C
+        assert rng["endColumnIndex"] == 3
+        assert rng["startRowIndex"] == 1     # below the header
+
+    def test_formula_column_has_a_hover_note(self):
+        notes = [
+            r["updateCells"] for r in self._setup_requests()
+            if "updateCells" in r
+        ]
+        col_c = [n for n in notes if n["range"]["startColumnIndex"] == 2]
+        assert len(col_c) == 1
+        text = col_c[0]["rows"][0]["values"][0]["note"]
+        assert "No leading '='" in text
+        assert "[Spend]/[Clicks]" in text

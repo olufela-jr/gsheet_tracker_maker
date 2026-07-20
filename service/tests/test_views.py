@@ -2,8 +2,16 @@
 
 from datetime import date
 
+import pytest
+
 from config import DEFAULT_CONFIG
-from tracker import build_comparison, build_view, build_views, date_to_serial
+from tracker import (
+    ValidationError,
+    build_comparison,
+    build_view,
+    build_views,
+    date_to_serial,
+)
 
 
 class FakeClient:
@@ -423,3 +431,35 @@ class TestComparison:
         assert len(added) == 1
         chart = added[0]["addChart"]["chart"]["spec"]["basicChart"]
         assert len(chart["series"]) == 2  # Side A and Side B
+
+
+class TestUnvalidatedFormula:
+    """build_views is a standalone action, so bad formulas reach the builders."""
+
+    def _client(self, formula):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", ""],
+            ["Spend", "metric", "", "currency", "", ""],
+            ["Clicks", "metric", "", "number", "", ""],
+            ["CPC", "calculated", formula, "currency", "", ""],
+        ]
+        return FakeClient(
+            setup,
+            ["Day", "Region", "Spend", "Clicks"],
+            [date_to_serial(date(2025, 8, 4))],
+            {"setup": 1, "data_source": 2, DEFAULT_CONFIG.monthly_tab: 3},
+            mapping_rows=[["Region"], ["**"], ["North"]],
+        )
+
+    def test_wrong_case_token_raises_validation_error_not_keyerror(self):
+        client = self._client("[Spend]/[clicks]")
+        with pytest.raises(ValidationError) as exc:
+            build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        assert any("Did you mean [Clicks]?" in e for e in exc.value.errors)
+
+    def test_unknown_token_raises_validation_error(self):
+        client = self._client("[Spend]/[Nope]")
+        with pytest.raises(ValidationError) as exc:
+            build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        assert any("unknown field 'Nope'" in e for e in exc.value.errors)

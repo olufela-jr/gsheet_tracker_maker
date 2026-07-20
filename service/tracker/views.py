@@ -50,6 +50,7 @@ from .fields import (
     metric_fields_of,
     read_data_source_headers,
     read_setup,
+    resolve_token_,
 )
 from .formulas import (
     DATE_FORMAT,
@@ -292,7 +293,10 @@ def _metric_cell_of(v, first_col, row):
     occupies one column in Setup order.
     """
     index = {m.name: i for i, m in enumerate(v.metric_fields)}
-    return lambda name: "{}{}".format(column_to_letter(first_col + index[name]), row)
+    return lambda name: "{}{}".format(
+        column_to_letter(first_col + resolve_token_(index, name, v.metric_fields)),
+        row,
+    )
 
 
 def _add_kpi_strip(page, v, dim_specs):

@@ -378,6 +378,24 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
             'Type is "metric", "dimension", "date", or "calculated".'))
         requests.append(
             _note(
+                setup_sheet_id, 0, 2,
+                "Calculated fields only: the expression, with each metric "
+                "named in brackets, e.g. [Spend]/[Clicks]. No leading '=', "
+                "and the names must match the Field column exactly.",
+            )
+        )
+        # The Formula column holds expressions like [Spend]/[Clicks]. Left as
+        # a normal cell, Sheets reads a leading '=' as a live formula and
+        # rejects the bracket syntax with a parse error, so force plain text.
+        requests.append(
+            _format(
+                setup_sheet_id, 1, 1000, 2, 3,
+                {"numberFormat": {"type": "TEXT"}},
+                "userEnteredFormat.numberFormat",
+            )
+        )
+        requests.append(
+            _note(
                 setup_sheet_id, 0, 4,
                 "Dimensions only: check to show this dimension as a filter in "
                 "the daily/weekly/monthly views. Blank = hidden from the views.",

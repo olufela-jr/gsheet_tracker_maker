@@ -131,7 +131,9 @@ function buildHowTo_(ss) {
     'Names and headers must be unique.\n' +
     'B  Type: metric, dimension, date (tag exactly one field as date), or calculated.\n' +
     'C  Formula: the [Field]-token expression for a calculated field, e.g. [Spend]/[Clicks]. ' +
-    'Its cells simply compute from the metric cells beside them, so it follows every slicer.\n' +
+    'Write it with no leading "=", naming each metric in brackets exactly as it appears ' +
+    'in the Field column. Its cells simply compute from the metric cells beside them, ' +
+    'so it follows every slicer.\n' +
     'D  Format: optional number format: currency, percent, or number.\n' +
     'E  Show in views: dimensions only; check to add it as a filter dropdown (slicer) on ' +
     'the views.\n' +
@@ -139,7 +141,7 @@ function buildHowTo_(ss) {
     'G  Mapping: dimensions only; check to list its values in the mapping tab. ' +
     'Show / Break-out imply it; leave all three blank to keep a high-cardinality ' +
     'dimension out of Mapping.');
-  sheet.setRowHeight(7, 160);
+  sheet.setRowHeight(7, 178);
 
   heading_(sheet, 'A9', '3. Example setup');
   const example = [

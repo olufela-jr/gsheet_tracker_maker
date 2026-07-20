@@ -35,6 +35,7 @@ from .fields import (
     metric_fields_of,
     read_data_source_headers,
     read_setup,
+    resolve_token_,
 )
 from .formulas import (
     DATE_FORMAT,
@@ -207,9 +208,13 @@ def _add_metrics_table(page, v, L, sides):
             rr = L.read_first_row + i
             if is_calculated(m):
                 a_total = calc_cell_formula(
-                    m.formula, lambda n: "B{}".format(row_of[n]))
+                    m.formula,
+                    lambda n: "B{}".format(
+                        resolve_token_(row_of, n, v.metric_fields)))
                 b_total = calc_cell_formula(
-                    m.formula, lambda n: "C{}".format(row_of[n]))
+                    m.formula,
+                    lambda n: "C{}".format(
+                        resolve_token_(row_of, n, v.metric_fields)))
             else:
                 a_total = between_formula(
                     m, v.date_range, '">="&{}'.format(sides.fa),

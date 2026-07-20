@@ -89,6 +89,45 @@ def is_calculated(field):
     return field.type == "calculated"
 
 
+def field_key(name):
+    """The identity of a field name, ignoring case and punctuation.
+
+    Two names sharing a key are already rejected as duplicates, so a key
+    identifies at most one field. That makes it safe for suggest_field_ to
+    name the field a mistyped [Field] token probably meant.
+    """
+    return sanitise_name(name).lower()
+
+
+def suggest_field_(token, fields):
+    """A field whose name differs from `token` only in case or punctuation.
+
+    Token matching itself stays exact; this only sharpens the error message.
+    Returns None when nothing is close.
+    """
+    key = field_key(token)
+    for f in fields:
+        if field_key(f.name) == key:
+            return f.name
+    return None
+
+
+def resolve_token_(index, token, fields):
+    """Look up a [Field] token in a name -> value map, or raise ValidationError.
+
+    build_views is a standalone Console action, so a formula that never went
+    through validate reaches the builders; without this a mismatched token
+    surfaces as a bare KeyError (a 500) instead of the guidance validate gives.
+    """
+    if token in index:
+        return index[token]
+    message = "Formula references unknown field '{}'.".format(token)
+    near = suggest_field_(token, fields)
+    if near:
+        message += " Did you mean [{}]?".format(near)
+    raise ValidationError([message])
+
+
 def metric_fields_of(fields):
     """Metric and calculated fields, in Setup order (they render together)."""
     return [f for f in fields if f.type in ("metric", "calculated")]
@@ -175,7 +214,7 @@ def validate(client, cfg):
 
     seen_fields = {}
     for f in fields:
-        key = sanitise_name(f.name).lower()
+        key = field_key(f.name)
         if key in seen_fields and f.name not in seen_fields[key]:
             errors.append(
                 "Setup fields '{}' and '{}' collide (same name once sanitised); "
@@ -193,7 +232,7 @@ def validate(client, cfg):
         name = str(header).strip()
         if not name:
             continue
-        key = sanitise_name(name).lower()
+        key = field_key(name)
         if key in seen_headers and name not in seen_headers[key]:
             errors.append(
                 "Data Source headers '{}' and '{}' collide (same name once "
@@ -221,6 +260,22 @@ def validate(client, cfg):
                 "Calculated field '{}' has no formula; give it a [Field]-token "
                 "expression like [Spend]/[Clicks].".format(f.name)
             )
+        # A leading '=' makes Sheets treat the cell as a live formula, and
+        # would otherwise reach the views as '=IFERROR(=B7/C7, "")'.
+        if f.type == "calculated" and f.formula.startswith("="):
+            errors.append(
+                "Calculated field '{}' starts its formula with '='; drop it "
+                "and write the expression alone, e.g. [Spend]/[Clicks]."
+                .format(f.name)
+            )
+        # No tokens at all means the cell holds something that is not an
+        # expression: a Sheets error value, or plain unbracketed names.
+        if f.type == "calculated" and f.formula and not formula_tokens(f.formula):
+            errors.append(
+                "Calculated field '{}' has no [Field] tokens in '{}'; name the "
+                "metrics in brackets, e.g. [Spend]/[Clicks]."
+                .format(f.name, f.formula)
+            )
         if f.type != "calculated" and f.formula:
             errors.append(
                 "Field '{}' has a formula but type '{}'; only calculated "
@@ -230,10 +285,14 @@ def validate(client, cfg):
             for token in formula_tokens(f.formula):
                 ref = by_name.get(token)
                 if ref is None:
-                    errors.append(
+                    message = (
                         "Calculated field '{}' references unknown field '{}'."
                         .format(f.name, token)
                     )
+                    near = suggest_field_(token, fields)
+                    if near:
+                        message += " Did you mean [{}]?".format(near)
+                    errors.append(message)
                 elif is_calculated(ref):
                     errors.append(
                         "Calculated field '{}' references another calculated "

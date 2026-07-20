@@ -527,3 +527,47 @@ class TestBuildSumifsFormula:
     def test_custom_sentinel(self):
         formula = build_sumifs_formula("Sales", [("Region", "A2")], sentinel="ALL")
         assert formula == '=SUMIFS(Sales, Region, IF(A2="ALL","<>",A2))'
+
+
+class TestCalculatedFormulaEntry:
+    """Guardrails for how a calculated formula is typed into the setup tab."""
+
+    def _setup(self, formula):
+        return [
+            ["Day", "date", "", ""],
+            ["Clicks", "metric", "", "number"],
+            ["Impressions", "metric", "", "number"],
+            ["CTR", "calculated", formula, "percent"],
+        ]
+
+    HEADERS = ["Day", "Clicks", "Impressions"]
+
+    def test_leading_equals_rejected(self):
+        # Sheets reads a leading '=' as a live formula; left alone it would
+        # reach the views as '=IFERROR(=B7/C7, "")'.
+        client = FakeReader(self._setup("=[Clicks]/[Impressions]"), self.HEADERS)
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("starts its formula with '='" in e for e in exc.value.errors)
+
+    def test_wrong_case_token_suggests_the_field(self):
+        client = FakeReader(self._setup("[clicks]/[impressions]"), self.HEADERS)
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any(
+            "unknown field 'clicks'" in e and "Did you mean [Clicks]?" in e
+            for e in exc.value.errors
+        )
+
+    def test_formula_without_tokens_rejected(self):
+        # A Sheets error value, or plain unbracketed names, would otherwise
+        # pass validation and render a dead cell.
+        for formula in ("#ERROR!", "clicks/impressions"):
+            client = FakeReader(self._setup(formula), self.HEADERS)
+            with pytest.raises(ValidationError) as exc:
+                validate(client, DEFAULT_CONFIG)
+            assert any("no [Field] tokens" in e for e in exc.value.errors)
+
+    def test_correctly_typed_formula_passes(self):
+        client = FakeReader(self._setup("[Clicks]/[Impressions]"), self.HEADERS)
+        validate(client, DEFAULT_CONFIG)  # no raise
