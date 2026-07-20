@@ -16,13 +16,13 @@
 
 /** Tracker Admin > Send: run the Console's action on the Console's URL. */
 function sendFromConsole() {
-  var input = readConsole_();
+  const input = readConsole_();
   if (!input) {
     SpreadsheetApp.getUi().alert(
       'No Console tab. Run Tracker Admin > Apply formatting first.');
     return;
   }
-  var id = parseSheetId_(input.url);
+  const id = parseSheetId_(input.url);
   if (!id) {
     writeStatus_('Paste a valid tracker URL into ' + CELL_URL + ' and try again.');
     return;
@@ -30,7 +30,7 @@ function sendFromConsole() {
 
   // The service account must be able to edit the target; the operator must own
   // or edit it for this share to succeed.
-  var ss;
+  let ss;
   try {
     ss = SpreadsheetApp.openById(id);
     shareWithServiceAccount_(ss);
@@ -40,7 +40,7 @@ function sendFromConsole() {
   }
 
   writeStatus_('Running ' + input.action + '...');
-  var payload = { action: input.action, spreadsheet_id: id };
+  const payload = { action: input.action, spreadsheet_id: id };
   if (input.action === 'scaffold') {
     payload.url = ss.getUrl();
     payload.title = input.title;
@@ -48,7 +48,7 @@ function sendFromConsole() {
     payload.sub_brand = input.subBrand;
   }
 
-  var parsed = postToService_(payload);
+  const parsed = postToService_(payload);
   if (parsed && parsed.status === 'ok') {
     writeStatus_(input.action + ': ' + (parsed.message || 'done'));
     if (input.action === 'scaffold') {
@@ -61,8 +61,8 @@ function sendFromConsole() {
 
 /** Tracker Admin > New tracker: create a clean sheet from the Console details. */
 function newTrackerFromConsole() {
-  var ui = SpreadsheetApp.getUi();
-  var input = readConsole_();
+  const ui = SpreadsheetApp.getUi();
+  const input = readConsole_();
   if (!input) {
     ui.alert('No Console tab. Run Tracker Admin > Apply formatting first.');
     return;
@@ -70,7 +70,7 @@ function newTrackerFromConsole() {
   // The service requires these to register the tracker; block loudly, not just
   // with a status line, so it is obvious why nothing was created.
   if (!input.client || !input.subBrand) {
-    var msg = 'Fill in Client and Sub-brand on the Console (cells ' +
+    const msg = 'Fill in Client and Sub-brand on the Console (cells ' +
       CELL_CLIENT + ' and ' + CELL_SUBBRAND + '), then New tracker again.';
     writeStatus_(msg);
     ui.alert('New tracker', msg, ui.ButtonSet.OK);
@@ -78,12 +78,12 @@ function newTrackerFromConsole() {
   }
 
   // Create AS the operator (they own it), then let the service account edit it.
-  var ss = SpreadsheetApp.create(input.title);
+  const ss = SpreadsheetApp.create(input.title);
   shareWithServiceAccount_(ss);
-  var url = ss.getUrl();
+  const url = ss.getUrl();
 
   writeStatus_('Creating "' + input.title + '"...');
-  var parsed = postToService_({
+  const parsed = postToService_({
     action: 'scaffold',
     spreadsheet_id: ss.getId(),
     url: url,
@@ -105,7 +105,7 @@ function newTrackerFromConsole() {
         'tabs, then use Send with the run_all action.',
       ui.ButtonSet.OK);
   } else {
-    var err = 'Created the sheet but scaffolding failed: ' + serviceErrorText_(parsed);
+    const err = 'Created the sheet but scaffolding failed: ' + serviceErrorText_(parsed);
     writeStatus_(err);
     ui.alert('New tracker', err, ui.ButtonSet.OK);
   }
@@ -116,7 +116,7 @@ function serviceErrorText_(parsed) {
   if (!parsed) {
     return 'no response';
   }
-  var message = parsed.message || 'error';
+  let message = parsed.message || 'error';
   if (parsed.detail && parsed.detail.errors && parsed.detail.errors.length) {
     message += ' - ' + parsed.detail.errors.join('; ');
   }
@@ -124,7 +124,7 @@ function serviceErrorText_(parsed) {
 }
 
 function shareWithServiceAccount_(spreadsheet) {
-  var sa = (typeof SERVICE_ACCOUNT_EMAIL !== 'undefined') ? SERVICE_ACCOUNT_EMAIL : '';
+  const sa = (typeof SERVICE_ACCOUNT_EMAIL !== 'undefined') ? SERVICE_ACCOUNT_EMAIL : '';
   if (sa) {
     spreadsheet.addEditor(sa);
   }
@@ -135,7 +135,7 @@ function parseSheetId_(text) {
     return '';
   }
   text = text.trim();
-  var match = text.match(/\/d\/([a-zA-Z0-9-_]+)/);
+  const match = text.match(/\/d\/([a-zA-Z0-9-_]+)/);
   if (match) {
     return match[1];
   }
@@ -143,16 +143,16 @@ function parseSheetId_(text) {
 }
 
 function postToService_(payload) {
-  var url = (typeof SERVICE_URL !== 'undefined') ? SERVICE_URL : '';
+  const url = (typeof SERVICE_URL !== 'undefined') ? SERVICE_URL : '';
   if (!url) {
     SpreadsheetApp.getUi().alert('SERVICE_URL is not set in Config.gs.');
     return null;
   }
   // The operator's identity token authenticates to Cloud Run (header) and is
   // verified by the service (body).
-  var token = ScriptApp.getIdentityToken();
+  const token = ScriptApp.getIdentityToken();
   payload.token = token;
-  var options = {
+  const options = {
     method: 'post',
     contentType: 'application/json',
     headers: { Authorization: 'Bearer ' + token },

@@ -82,7 +82,7 @@ def _client(granularity_tab, region_breakout=""):
         ["Region", "dimension", "", "", "TRUE", region_breakout],
         ["Spend", "metric", "", "currency", "", ""],
         ["Clicks", "metric", "", "number", "", ""],
-        ["CPC", "metric", "[Spend]/[Clicks]", "currency", "", ""],
+        ["CPC", "calculated", "[Spend]/[Clicks]", "currency", "", ""],
     ]
     headers = ["Day", "Region", "Spend", "Clicks"]
     serials = [

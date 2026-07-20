@@ -69,3 +69,38 @@ class TestLineChart:
         domain = req["addChart"]["chart"]["spec"]["basicChart"]["domains"][0]
         src = domain["domain"]["sourceRange"]["sources"][0]
         assert src["startColumnIndex"] == 0 and src["endColumnIndex"] == 1
+
+
+class TestInputTabFormat:
+    def _setup_validations(self):
+        requests = theme.input_tab_format_requests(7, None)
+        return [r["setDataValidation"] for r in requests if "setDataValidation" in r]
+
+    def test_type_column_gets_a_dropdown_of_the_field_types(self):
+        dropdowns = [
+            v for v in self._setup_validations()
+            if v["rule"]["condition"]["type"] == "ONE_OF_LIST"
+        ]
+        assert len(dropdowns) == 1
+        rule = dropdowns[0]
+        # Column B (index 1), below the header row.
+        assert rule["range"]["startColumnIndex"] == 1
+        assert rule["range"]["endColumnIndex"] == 2
+        assert rule["range"]["startRowIndex"] == 1
+        values = [v["userEnteredValue"] for v in rule["rule"]["condition"]["values"]]
+        assert values == ["metric", "dimension", "date", "calculated"]
+        # Strict: only the listed types are accepted at entry.
+        assert rule["rule"]["strict"] is True
+
+    def test_toggle_columns_keep_their_checkboxes(self):
+        checkboxes = [
+            v for v in self._setup_validations()
+            if v["rule"]["condition"]["type"] == "BOOLEAN"
+        ]
+        assert len(checkboxes) == 1
+        assert checkboxes[0]["range"]["startColumnIndex"] == 4
+        assert checkboxes[0]["range"]["endColumnIndex"] == 7
+
+    def test_no_setup_requests_when_setup_not_created(self):
+        requests = theme.input_tab_format_requests(None, None)
+        assert requests == []

@@ -8,14 +8,14 @@
  * Edit the layout and palette here to change the control panel across instances.
  */
 
-var BLUE = '#1a73e8';
-var WHITE = '#ffffff';
-var GREY = '#5f6368';
-var LIGHT = '#f8f9fc';
-var BORDER = '#dce3f1';
+const BLUE = '#1a73e8';
+const WHITE = '#ffffff';
+const GREY = '#5f6368';
+const LIGHT = '#f8f9fc';
+const BORDER = '#dce3f1';
 
 function setupMaster() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
   buildConsole_(ss);
   buildHowTo_(ss);
   buildLog_(ss);
@@ -25,11 +25,11 @@ function setupMaster() {
 
 /** Reuse a tab by name; on a brand-new sheet, adopt the empty default Sheet1. */
 function getOrCreateSheet_(ss, name) {
-  var sheet = ss.getSheetByName(name);
+  const sheet = ss.getSheetByName(name);
   if (sheet) {
     return sheet;
   }
-  var sheets = ss.getSheets();
+  const sheets = ss.getSheets();
   if (sheets.length === 1 &&
       sheets[0].getName() === 'Sheet1' && sheets[0].getLastRow() === 0) {
     sheets[0].setName(name);
@@ -39,7 +39,7 @@ function getOrCreateSheet_(ss, name) {
 }
 
 function buildConsole_(ss) {
-  var sheet = getOrCreateSheet_(ss, CONSOLE_TAB);
+  const sheet = getOrCreateSheet_(ss, CONSOLE_TAB);
   sheet.clear();
   sheet.clearNotes();
   sheet.getRange(1, 1, sheet.getMaxRows(), sheet.getMaxColumns())
@@ -57,7 +57,7 @@ function buildConsole_(ss) {
               'then Tracker Admin ▸ Send.')
     .setFontColor(GREY);
 
-  var labels = [
+  const labels = [
     ['A3', 'Target sheet URL'],
     ['A4', 'Action'],
     ['A7', 'Client'],
@@ -85,7 +85,7 @@ function buildConsole_(ss) {
   });
 
   // Action dropdown, defaulting to run_all.
-  var rule = SpreadsheetApp.newDataValidation()
+  const rule = SpreadsheetApp.newDataValidation()
     .requireValueInList(CONSOLE_ACTIONS, true)
     .setAllowInvalid(false)
     .build();
@@ -109,7 +109,7 @@ function buildConsole_(ss) {
 }
 
 function buildHowTo_(ss) {
-  var sheet = getOrCreateSheet_(ss, HOWTO_TAB);
+  const sheet = getOrCreateSheet_(ss, HOWTO_TAB);
   sheet.clear();
   sheet.setHiddenGridlines(true);
 
@@ -142,7 +142,7 @@ function buildHowTo_(ss) {
   sheet.setRowHeight(7, 160);
 
   heading_(sheet, 'A9', '3. Example setup');
-  var example = [
+  const example = [
     ['Field', 'Type', 'Formula', 'Format', 'Show in views', 'Break-out table', 'Mapping'],
     ['Day', 'date', '', '', '', '', ''],
     ['Region', 'dimension', '', '', 'TRUE', 'TRUE', ''],
@@ -209,9 +209,9 @@ function buildHowTo_(ss) {
 
 /** Ensure a Log tab exists with a header; adopt the old Admin tab if present. */
 function buildLog_(ss) {
-  var sheet = ss.getSheetByName(LOG_TAB);
+  let sheet = ss.getSheetByName(LOG_TAB);
   if (!sheet) {
-    var admin = ss.getSheetByName('Admin');  // the pre-redesign log tab
+    const admin = ss.getSheetByName('Admin');  // the pre-redesign log tab
     sheet = admin || ss.insertSheet(LOG_TAB);
     sheet.setName(LOG_TAB);
   }

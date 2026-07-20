@@ -8,22 +8,22 @@
  * the tab and Service.gs acts on it.
  */
 
-var CONSOLE_TAB = 'Console';
-var HOWTO_TAB = 'How-to';
-var LOG_TAB = 'Log';
+const CONSOLE_TAB = 'Console';
+const HOWTO_TAB = 'How-to';
+const LOG_TAB = 'Log';
 
 // Input and output cells on the Console tab (see buildConsole_ in Setup.gs).
-var CELL_URL = 'B3';
-var CELL_ACTION = 'B4';
-var CELL_CLIENT = 'B7';
-var CELL_SUBBRAND = 'B8';
-var CELL_TITLE = 'B9';
-var CELL_STATUS = 'B11';
-var CELL_LASTRUN = 'B12';
+const CELL_URL = 'B3';
+const CELL_ACTION = 'B4';
+const CELL_CLIENT = 'B7';
+const CELL_SUBBRAND = 'B8';
+const CELL_TITLE = 'B9';
+const CELL_STATUS = 'B11';
+const CELL_LASTRUN = 'B12';
 
 // Actions the Console dropdown offers. run_all (Refresh) is the default; the
 // last, scaffold, prepares/creates the input tabs and registers the sheet.
-var CONSOLE_ACTIONS = [
+const CONSOLE_ACTIONS = [
   'run_all',
   'validate',
   'generate_mapping',
@@ -38,7 +38,7 @@ function consoleSheet_() {
 
 /** Read the Console inputs into a plain object, or null if the tab is missing. */
 function readConsole_() {
-  var sheet = consoleSheet_();
+  const sheet = consoleSheet_();
   if (!sheet) {
     return null;
   }
@@ -56,7 +56,7 @@ function readConsole_() {
 
 /** Write a status line and a timestamp back to the Console. */
 function writeStatus_(message) {
-  var sheet = consoleSheet_();
+  const sheet = consoleSheet_();
   if (!sheet) {
     return;
   }
@@ -67,12 +67,12 @@ function writeStatus_(message) {
 
 /** Append a clickable record of a tracker to the Log tab. */
 function logTracker_(title, client, subBrand, url) {
-  var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_TAB);
+  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(LOG_TAB);
   if (!sheet) {
     return;
   }
-  var label = String(title).replace(/"/g, '""');
-  var row = sheet.getLastRow() + 1;
+  const label = String(title).replace(/"/g, '""');
+  const row = sheet.getLastRow() + 1;
   sheet.getRange(row, 1).setValue(new Date());
   sheet.getRange(row, 2).setValue(client + ' / ' + subBrand);
   sheet.getRange(row, 3).setFormula('=HYPERLINK("' + url + '","' + label + '")');

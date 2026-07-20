@@ -71,8 +71,6 @@ def read_setup(client, cfg):
         if not name:
             continue
         ftype = _cell(row, 1).lower()
-        if ftype.startswith("calc"):  # "calculated", "calculated field", "calc"
-            ftype = "calculated"
         fields.append(
             Field(
                 name=name,
@@ -88,10 +86,7 @@ def read_setup(client, cfg):
 
 
 def is_calculated(field):
-    """True for the calculated type, or a legacy metric carrying a formula."""
-    return field.type == "calculated" or (
-        field.type == "metric" and bool(field.formula)
-    )
+    return field.type == "calculated"
 
 
 def metric_fields_of(fields):
@@ -153,9 +148,10 @@ def read_data_source_headers(client, cfg):
 def validate(client, cfg):
     """Check that Setup describes a usable tracker against Data Source.
 
-    Rules: at least one metric; exactly one date field; raw fields (no formula)
-    must be Data Source headers, while calculated fields (with a formula) skip
-    that check but their [Field] tokens must reference known raw fields; field
+    Rules: at least one metric; exactly one date field; raw fields must be
+    Data Source headers, while calculated fields skip that check but must
+    carry a formula whose [Field] tokens reference known raw fields (a
+    formula on any other type is an error); field
     names and Data Source headers must be unique once sanitised — the SUMIFS
     bind to one named range per sanitised name and Mapping reads data columns
     by header, so a duplicate silently points formulas at the wrong column.
@@ -224,6 +220,11 @@ def validate(client, cfg):
             errors.append(
                 "Calculated field '{}' has no formula; give it a [Field]-token "
                 "expression like [Spend]/[Clicks].".format(f.name)
+            )
+        if f.type != "calculated" and f.formula:
+            errors.append(
+                "Field '{}' has a formula but type '{}'; only calculated "
+                "fields take a formula.".format(f.name, f.type)
             )
         if is_calculated(f):
             for token in formula_tokens(f.formula):

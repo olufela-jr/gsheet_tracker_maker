@@ -148,7 +148,7 @@ class TestCalculatedFields:
         setup = [
             ["Day", "date", "", "", "", "", ""],
             ["Spend", "metric", "", "currency", "", "", ""],
-            ["CPC", "Calculated field", "[Spend]/[Clicks]", "currency", "", "", ""],
+            ["CPC", "calculated", "[Spend]/[Clicks]", "currency", "", "", ""],
         ]
         fields = read_setup(FakeReader(setup, ["Day", "Spend"]), DEFAULT_CONFIG)
         by_name = {f.name: f for f in fields}
@@ -158,9 +158,9 @@ class TestCalculatedFields:
         # Calculated fields render alongside metrics, in Setup order.
         assert [f.name for f in metric_fields_of(fields)] == ["Spend", "CPC"]
 
-    def test_legacy_metric_with_formula_counts_as_calculated(self):
+    def test_only_the_exact_calculated_spelling_counts(self):
         f = Field(name="CPC", type="metric", formula="[Spend]/[Clicks]", fmt="")
-        assert is_calculated(f)
+        assert not is_calculated(f)
 
 
 class TestSumifsExpr:
@@ -235,7 +235,7 @@ class TestValidate:
             ["Region", "dimension", "", "", "TRUE"],
             ["Spend", "metric", "", "currency", ""],
             ["Clicks", "metric", "", "number", ""],
-            ["CPC", "metric", "[Spend]/[Clicks]", "currency", ""],
+            ["CPC", "calculated", "[Spend]/[Clicks]", "currency", ""],
         ]
 
     def test_valid_tracker_passes(self):
@@ -290,6 +290,28 @@ class TestValidate:
         with pytest.raises(ValidationError) as exc:
             validate(client, DEFAULT_CONFIG)
         assert any("no formula" in e for e in exc.value.errors)
+
+    def test_formula_on_a_metric_rejected(self):
+        setup = [
+            ["Day", "date", "", ""],
+            ["Spend", "metric", "", ""],
+            ["CPC", "metric", "[Spend]/[Spend]", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend", "CPC"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("only calculated" in e for e in exc.value.errors)
+
+    def test_calc_spellings_are_not_normalised(self):
+        setup = [
+            ["Day", "date", "", ""],
+            ["Spend", "metric", "", ""],
+            ["CPC", "calc", "[Spend]/[Spend]", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend"])
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("unknown type 'calc'" in e for e in exc.value.errors)
 
     def test_calculated_referencing_a_dimension_rejected(self):
         setup = [
@@ -347,7 +369,7 @@ class TestValidate:
         assert any("duplicate header 'Day'" in e for e in exc.value.errors)
 
     def test_calc_referencing_unknown_field(self):
-        setup = [["Day", "date", "", ""], ["X", "metric", "[Nope]", ""]]
+        setup = [["Day", "date", "", ""], ["X", "calculated", "[Nope]", ""]]
         client = FakeReader(setup, ["Day"])
         with pytest.raises(ValidationError) as exc:
             validate(client, DEFAULT_CONFIG)
@@ -356,8 +378,8 @@ class TestValidate:
     def test_calc_referencing_calc_rejected(self):
         setup = [
             ["Day", "date", "", ""],
-            ["A", "metric", "[Day]", ""],
-            ["B", "metric", "[A]", ""],
+            ["A", "calculated", "[Day]", ""],
+            ["B", "calculated", "[A]", ""],
         ]
         client = FakeReader(setup, ["Day"])
         with pytest.raises(ValidationError) as exc:

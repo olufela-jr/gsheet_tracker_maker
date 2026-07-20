@@ -43,6 +43,10 @@ HEADING_TEXT = rgb("202124")
 BORDER = rgb("DCE3F1")
 FONT = "Arial"
 
+# The setup tab's valid Type values, offered as a dropdown on scaffold. Kept
+# here (not imported from tracker.fields) to avoid a circular import.
+FIELD_TYPES = ("metric", "dimension", "date", "calculated")
+
 
 # --- low level request builders -------------------------------------------
 
@@ -404,6 +408,26 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                         "condition": {"type": "BOOLEAN"},
                         "showCustomUi": True,
                         "strict": False,
+                    },
+                }
+            }
+        )
+        # A dropdown down the Type column so the valid types are pickable.
+        # Strict: anything outside the list is rejected at entry.
+        requests.append(
+            {
+                "setDataValidation": {
+                    "range": _grid(setup_sheet_id, 1, 1000, 1, 2),
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": v}
+                                for v in FIELD_TYPES
+                            ],
+                        },
+                        "showCustomUi": True,
+                        "strict": True,
                     },
                 }
             }
