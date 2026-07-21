@@ -34,10 +34,10 @@ def rgb(hex_str):
 
 PAGE_BG = rgb("F8F9FC")       # near-white page, faint cool tint
 CARD_BG = rgb("FFFFFF")
-BANNER_BG = rgb("1A73E8")     # vivid blue header
+BANNER_BG = rgb("1B3B6F")     # navy header
 BANNER_TEXT = rgb("FFFFFF")
 HIGHLIGHT = rgb("E8F0FE")     # airy light-blue tint (totals, calculated columns)
-ACCENT = rgb("1967D2")        # blue value text (darker step for legibility)
+ACCENT = rgb("142F58")        # darker navy value text (darker step for legibility)
 MUTED_TEXT = rgb("5F6368")
 HEADING_TEXT = rgb("202124")
 BORDER = rgb("DCE3F1")
