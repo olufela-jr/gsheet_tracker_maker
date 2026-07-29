@@ -8,6 +8,7 @@ from config import DEFAULT_CONFIG
 from tracker import (
     ValidationError,
     build_tracker_record,
+    create_named_ranges,
     date_to_serial,
     generate_mapping,
     log_tracker,
@@ -233,3 +234,107 @@ class TestLogTracker:
         assert dataset == DEFAULT_CONFIG.bigquery_dataset
         assert table == DEFAULT_CONFIG.bigquery_table
         assert row == record
+
+
+DATA_SOURCE_SHEET_ID = 7
+
+
+class FakeNamedRanges:
+    """Fake covering the client surface create_named_ranges touches."""
+
+    def __init__(self, headers, named_ranges=None):
+        self._headers = headers
+        self._named = named_ranges or {}
+        self.batch_requests = []
+
+    def read_range(self, a1_range, unformatted=False):
+        return [self._headers]
+
+    def get_sheet_id(self, title):
+        return DATA_SOURCE_SHEET_ID
+
+    def get_named_ranges(self):
+        return self._named
+
+    def batch_update(self, requests):
+        self.batch_requests.extend(requests)
+
+
+def _existing(name, col, **extra):
+    """An existing named range as the API returns it, plus any overrides."""
+    grid = {
+        "sheetId": DATA_SOURCE_SHEET_ID,
+        "startRowIndex": 1,
+        "startColumnIndex": col,
+        "endColumnIndex": col + 1,
+    }
+    grid.update(extra)
+    return {"namedRangeId": "id_" + name, "name": name, "range": grid}
+
+
+class TestCreateNamedRanges:
+    def test_new_column_range_is_open_ended(self):
+        client = FakeNamedRanges(["Spend"])
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["created"] == ["Spend"]
+        grid = client.batch_requests[0]["addNamedRange"]["namedRange"]["range"]
+        # Row 2 down, with no bottom bound: 'data_source'!A2:A.
+        assert grid["startRowIndex"] == 1
+        assert "endRowIndex" not in grid
+
+    def test_range_already_open_ended_is_left_alone(self):
+        client = FakeNamedRanges(["Spend"], {"Spend": _existing("Spend", 0)})
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result == {"created": [], "updated": [], "skipped": ["Spend"]}
+        assert client.batch_requests == []
+
+    def test_capped_range_is_repaired(self):
+        # The bug: a range bounded at the sheet's row count stops feeding the
+        # SUMIFS once the data grows past it. Re-running must rewrite it.
+        client = FakeNamedRanges(
+            ["Spend"], {"Spend": _existing("Spend", 0, endRowIndex=1000)}
+        )
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["updated"] == ["Spend"]
+        update = client.batch_requests[0]["updateNamedRange"]
+        assert update["fields"] == "range"
+        assert update["namedRange"]["namedRangeId"] == "id_Spend"
+        assert "endRowIndex" not in update["namedRange"]["range"]
+
+    def test_range_on_the_wrong_column_is_repointed(self):
+        # Spend is column B here, but its range still points at column A.
+        client = FakeNamedRanges(
+            ["Clicks", "Spend"], {"Spend": _existing("Spend", 0)}
+        )
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["created"] == ["Clicks"]
+        assert result["updated"] == ["Spend"]
+        update = [r for r in client.batch_requests if "updateNamedRange" in r][0]
+        grid = update["updateNamedRange"]["namedRange"]["range"]
+        assert grid["startColumnIndex"] == 1 and grid["endColumnIndex"] == 2
+
+    def test_column_a_is_not_rewritten_every_run(self):
+        # The API omits a zero start index, so column A must still compare equal.
+        stored = _existing("Spend", 0)
+        del stored["range"]["startColumnIndex"]
+        client = FakeNamedRanges(["Spend"], {"Spend": stored})
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["skipped"] == ["Spend"]
+        assert client.batch_requests == []
+
+    def test_blank_headers_are_skipped(self):
+        client = FakeNamedRanges(["Spend", "", None, "Clicks"])
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["created"] == ["Spend", "Clicks"]
+
+    def test_headers_sanitising_to_one_name_yield_one_range(self):
+        client = FakeNamedRanges(["Ad Spend", "Ad/Spend"])
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["created"] == ["Ad_Spend"]
+        assert len(client.batch_requests) == 1
+
+    def test_missing_data_source_tab_raises(self):
+        client = FakeNamedRanges(["Spend"])
+        client.get_sheet_id = lambda title: None
+        with pytest.raises(ValueError):
+            create_named_ranges(client, DEFAULT_CONFIG)

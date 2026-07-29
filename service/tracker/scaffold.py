@@ -144,13 +144,50 @@ def generate_mapping(client, cfg):
     }
 
 
-def create_named_ranges(client, cfg):
-    """Create one named range per Data Source column.
+def _data_source_range(sheet_id, col_index):
+    """The GridRange for one Data Source column: <col>2:<col>.
 
-    Each range covers 'Data Source'!<col>2:<col> (header excluded, open-ended
-    to the bottom). The name is the sanitised header. Existing names are
-    skipped, never overwritten. Grid indices are 0-based and half-open;
-    omitting endRowIndex leaves the range open to the bottom of the sheet.
+    Grid indices are 0-based and half-open. startRowIndex skips the header;
+    omitting endRowIndex leaves the range open to the bottom of the sheet, so
+    rows appended later still feed the SUMIFS formulas.
+    """
+    return {
+        "sheetId": sheet_id,
+        "startRowIndex": 1,
+        "startColumnIndex": col_index,
+        "endColumnIndex": col_index + 1,
+    }
+
+
+def _matches_range(current, wanted):
+    """True when an existing named range already has the shape we want.
+
+    The API omits keys rather than returning nulls, so a range capped at a row
+    count comes back carrying an endRowIndex that `wanted` does not have —
+    that difference is what marks a range as needing repair. A zero start
+    index is omitted too, hence the default: without it, column A would look
+    like a mismatch and be rewritten on every run.
+    """
+    if current is None:
+        return False
+    if "endRowIndex" in current:
+        return False
+    for key, value in wanted.items():
+        default = 0 if key in ("startRowIndex", "startColumnIndex") else None
+        if current.get(key, default) != value:
+            return False
+    return True
+
+
+def create_named_ranges(client, cfg):
+    """Create or repair one named range per Data Source column.
+
+    Each range covers 'data_source'!<col>2:<col> (header excluded, open-ended
+    to the bottom). The name is the sanitised header. A name that already
+    exists is re-pointed when its range has drifted from that shape — capped
+    at a row count, or aimed at the wrong column — so re-running this repairs
+    a sheet whose ranges were bounded instead of leaving them to be fixed by
+    hand in the Named ranges panel.
     """
     headers = read_data_source_headers(client, cfg)
     sheet_id = client.get_sheet_id(cfg.data_source_tab)
@@ -159,42 +196,51 @@ def create_named_ranges(client, cfg):
             "Data Source tab '{}' was not found.".format(cfg.data_source_tab)
         )
 
-    existing = set(client.get_named_ranges().keys())
+    existing = client.get_named_ranges()
+    seen = set()
     requests = []
     created = []
+    updated = []
     skipped = []
 
     for col_index, header in enumerate(headers):
         if header is None or str(header).strip() == "":
             continue
         name = sanitise_name(header)
-        if name in existing:
-            skipped.append(name)
-            continue
         # Track names within this batch too, so two headers that sanitise to
         # the same name do not collide.
-        existing.add(name)
-        requests.append(
-            {
-                "addNamedRange": {
-                    "namedRange": {
-                        "name": name,
-                        "range": {
-                            "sheetId": sheet_id,
-                            "startRowIndex": 1,
-                            "startColumnIndex": col_index,
-                            "endColumnIndex": col_index + 1,
+        if name in seen:
+            skipped.append(name)
+            continue
+        seen.add(name)
+
+        wanted = _data_source_range(sheet_id, col_index)
+        current = existing.get(name)
+        if current is None:
+            requests.append(
+                {"addNamedRange": {"namedRange": {"name": name, "range": wanted}}}
+            )
+            created.append(name)
+        elif _matches_range(current.get("range"), wanted):
+            skipped.append(name)
+        else:
+            requests.append(
+                {
+                    "updateNamedRange": {
+                        "namedRange": {
+                            "namedRangeId": current["namedRangeId"],
+                            "range": wanted,
                         },
+                        "fields": "range",
                     }
                 }
-            }
-        )
-        created.append(name)
+            )
+            updated.append(name)
 
     if requests:
         client.batch_update(requests)
 
-    return {"created": created, "skipped": skipped}
+    return {"created": created, "updated": updated, "skipped": skipped}
 
 
 def scaffold(client, cfg):
