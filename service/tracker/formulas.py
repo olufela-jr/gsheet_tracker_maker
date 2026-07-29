@@ -116,71 +116,87 @@ def distinct_buckets(serials, granularity):
 
 # --- picker-driven period windows --------------------------------------------
 
-# Rows in each view's period matrix: the most periods the pickers can show.
-# The matrices are formula-driven windows scoped by each tab's date controls,
-# not lists of the dates seen in the data: daily renders the last 14 days of
-# the picked range (of the available data while the pickers are blank) and
-# weekly up to 6 Monday-start weeks, both newest first; monthly runs the
-# picked calendar year January to December, with months past TODAY() left
-# blank. Rows past the picked range blank out via the guard chain in
-# period_next_formula.
+# Rows in each view's period matrix. The matrices are rolling TODAY-anchored
+# windows, oldest first, independent of the date controls (those scope the
+# break-out tables): daily shows the last 14 days ending yesterday, weekly
+# the last 6 Monday-start weeks (including the week containing yesterday),
+# and monthly yesterday's calendar year January to December, with months
+# past yesterday left blank via the guard chain in period_next_formula.
 PERIOD_ROWS = {"day": 14, "week": 6, "month": 12}
 
 
 def picker_default_formulas(granularity):
     """Default formulas for a view's date controls.
 
-    Weekly returns a (from, to) pair ending yesterday (today's data is
-    usually partial); monthly returns the current-calendar-year formula.
-    Daily has no defaults: its dropdowns start blank and the matrix falls
-    back to the newest available data.
+    The controls scope the break-out tables (see picker_window_criteria).
+    Yesterday is the newest reference day everywhere (today's data is
+    usually partial): weekly returns a (from, to) pair ending yesterday;
+    monthly returns yesterday's calendar year. Daily has no defaults: its
+    dropdowns start blank, which leaves the break-outs unbounded.
     """
     if granularity == "week":
         return "=TODAY()-28", "=TODAY()-1"
     if granularity == "month":
-        return "=YEAR(TODAY())"
+        return "=YEAR(TODAY()-1)"
     raise ValueError("no picker defaults for granularity: {}".format(granularity))
 
 
-def period_start_formula(granularity, picker, dates_src=None):
-    """The matrix's first period cell, derived from the tab's date controls.
+def period_start_formula(granularity):
+    """The matrix's first period cell: the rolling window's oldest period.
 
-    `picker` is the (from, to) cell-ref pair for day/week — the newest period
-    sits first, so the start is the picked end date (its week's Monday for
-    weekly) — or the year cell ref for month (1 January of that year).
-    Daily falls back to the newest date in `dates_src` (the Mapping date
-    column) while its picker is blank.
+    Yesterday is the newest reference day (today's data is usually partial),
+    so daily is the first of the 14 days ending yesterday; weekly the Monday
+    five weeks before yesterday's (so six week rows end on the week
+    containing yesterday); monthly 1 January of yesterday's year.
     """
     if granularity == "day":
-        return '=IF({t}="",MAX({src}),{t})'.format(t=picker[1], src=dates_src)
+        return "=TODAY()-14"
     if granularity == "week":
-        return "={t}-WEEKDAY({t},3)".format(t=picker[1])
+        return "=TODAY()-1-WEEKDAY(TODAY()-1,3)-35"
     if granularity == "month":
-        return "=DATE({y},1,1)".format(y=picker)
+        return "=DATE(YEAR(TODAY()-1),1,1)"
     raise ValueError("unknown granularity: {}".format(granularity))
 
 
-def period_next_formula(granularity, cell, picker, first_cell=None):
-    """Each further period cell, derived from `cell` (the row above).
+def period_next_formula(granularity, cell):
+    """Each further period cell: one day / week / month past `cell` above.
 
-    Daily / weekly step backwards one day / week per row and go blank once
-    past the picked start date (weekly includes the week containing it), so
-    the matrix is sized to the picked range. While daily's From picker is
-    blank the window ends 14 days below `first_cell` (the matrix's effective
-    newest date). Monthly steps forwards through the picked year and goes
-    blank once past the current month, so the current year reads as the year
-    to date and a past one shows all 12 months. The chain is nested IFs, so
-    a blank cell above never errors.
+    Daily and weekly are plain steps — the rolling window always fills every
+    row. Monthly steps through the calendar year and goes blank once past
+    the month containing yesterday, so the year reads as the year to date;
+    the chain is nested IFs, so a blank cell above never errors.
     """
     if granularity == "day":
-        return ('=IF({c}="","",IF({c}-1<IF({f}="",{first}-13,{f}),"",{c}-1))'
-                .format(c=cell, f=picker[0], first=first_cell))
+        return "={c}+1".format(c=cell)
     if granularity == "week":
-        return '=IF({c}="","",IF({c}-7<{f}-WEEKDAY({f},3),"",{c}-7))'.format(
-            c=cell, f=picker[0]
+        return "={c}+7".format(c=cell)
+    if granularity == "month":
+        return ('=IF({c}="","",IF(EDATE({c},1)>TODAY()-1,"",EDATE({c},1)))'
+                .format(c=cell))
+    raise ValueError("unknown granularity: {}".format(granularity))
+
+
+def picker_window_criteria(granularity, picker):
+    """SUMIFS criteria pair (lower, upper) for the tab's picked date window.
+
+    `picker` is the (from, to) cell-ref pair for day/week, or the year cell
+    ref for month. A blank picker cell leaves that side unbounded (0 below,
+    a number past any date serial above), so a tab with blank date controls
+    still totals all data instead of erroring. Upper bounds are exclusive
+    ("<" of the next day/year) so date-time values on the last day are still
+    included.
+    """
+    if granularity in ("day", "week"):
+        f, t = picker
+        return (
+            '">="&IF({f}="",0,{f})'.format(f=f),
+            '"<"&IF({t}="",9.9E+307,{t}+1)'.format(t=t),
         )
     if granularity == "month":
-        return '=IF({c}="","",IF(EDATE({c},1)>TODAY(),"",EDATE({c},1)))'.format(c=cell)
+        return (
+            '">="&IF({y}="",0,DATE({y},1,1))'.format(y=picker),
+            '"<"&IF({y}="",9.9E+307,DATE({y}+1,1,1))'.format(y=picker),
+        )
     raise ValueError("unknown granularity: {}".format(granularity))
 
 
@@ -307,26 +323,32 @@ def bucket_formula(metric, date_range, cell, granularity, dim_specs, sentinel):
     )
 
 
-def _breakout_expr(metric_range, dim_range, value_cell, other_dim_specs, sentinel):
+def _breakout_expr(metric_range, dim_range, value_cell, date_range, lower,
+                   upper, other_dim_specs, sentinel):
     """SUMIFS for a raw metric fixed to one value of the break-out dimension.
 
-    The break-out dimension is pinned to `value_cell` (the row label); the other
-    shown dimensions are still filtered by their dropdowns. Not date-bucketed.
+    The break-out dimension is pinned to `value_cell` (the row label), the
+    total is bounded by the tab's date controls (lower / upper are full
+    criteria strings, see picker_window_criteria), and the other shown
+    dimensions are still filtered by their dropdowns.
     """
-    parts = [metric_range, dim_range, value_cell]
+    parts = [metric_range, dim_range, value_cell,
+             date_range, lower, date_range, upper]
     for dim_range_other, cell in other_dim_specs:
         parts.append(dim_range_other)
         parts.append('IF({c}="{s}","<>",{c})'.format(c=cell, s=sentinel))
     return "SUMIFS({})".format(", ".join(parts))
 
 
-def breakout_formula(metric, dim_range, value_cell, other_dim_specs, sentinel):
+def breakout_formula(metric, dim_range, value_cell, date_range, lower, upper,
+                     other_dim_specs, sentinel):
     """The break-out cell for a raw metric at one dimension value.
 
     Calculated fields never reach here (see calc_cell_formula).
     """
     return "=" + _breakout_expr(
-        sanitise_name(metric.name), dim_range, value_cell, other_dim_specs, sentinel
+        sanitise_name(metric.name), dim_range, value_cell, date_range, lower,
+        upper, other_dim_specs, sentinel
     )
 
 

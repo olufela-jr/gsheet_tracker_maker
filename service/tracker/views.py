@@ -7,17 +7,19 @@ KPI strip of slicer-filtered grand totals; on the weekly and monthly views
 the comparison block (two From/To date ranges side by side with the
 per-metric totals for each and a % change row underneath, filtered by the
 slicers); the by-period block; then one break-out block per flagged
-dimension (totals per value). The monthly view also gets a line chart.
+dimension (totals per value, scoped to the date controls). The monthly view
+also gets a line chart.
 
-The matrix's period column is a formula-driven window scoped by the tab's
-date controls. Daily's Date from / Date to are dropdowns of the available
-dates (the Mapping tab's date column), blank by default — the by-day block
-then shows the newest 14 days of data. Weekly's are calendar pickers
-defaulting to the last 28 days (up to 6 Monday-start weeks, newest first).
-Monthly has a Year dropdown (defaulting to the current calendar year)
-and runs January down to December, with months past TODAY() blank. Rows past the
-picked range blank out, so changing the pickers re-scopes every matrix
-without a rebuild.
+The matrix's period column is a rolling TODAY-anchored window, oldest
+first: daily shows the last 14 days ending yesterday, weekly the last 6
+Monday-start weeks, and monthly yesterday's calendar year January to
+December with months past yesterday blank (yesterday is the newest
+reference day everywhere — today's data is usually partial). The date
+controls do not drive the matrices — they scope the break-out tables:
+daily's Date from / Date to are dropdowns of the available dates (the
+Mapping tab's date column), blank by default (break-outs then total all
+data); weekly's are calendar pickers defaulting to the last 28 days;
+monthly has a Year dropdown defaulting to yesterday's calendar year.
 
 build_view orchestrates; each block is laid out by its own _add_* function
 that appends writes and formats to a shared Page. Positions come from the
@@ -67,6 +69,7 @@ from .formulas import (
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
+    picker_window_criteria,
     range_guarded,
 )
 from .scaffold import ensure_tab
@@ -191,7 +194,7 @@ def _add_filter_header(page, v):
     Returns (dim_specs, drop_positions, pickers): the
     (named_range, dropdown_cell) pair per dimension that every SUMIFS
     filters by, each dropdown's 0-based (row, col) for the validation
-    wiring, and the date-control ref(s) the period matrix anchors on — a
+    wiring, and the date-control ref(s) the break-out tables filter by — a
     (from, to) pair, or the year cell.
     """
     first_row = page.row
@@ -389,14 +392,14 @@ def _add_compare_block(page, v, dim_specs):
     page.row = diff_row + 2
 
 
-def _add_period_matrix(page, v, dim_specs, pickers):
+def _add_period_matrix(page, v, dim_specs):
     """One row per window period, one column per metric.
 
-    The period column is formulas: the first cell anchors the window on the
-    tab's date controls and each row below derives from the one above, going
-    blank past the picked range. Daily and weekly run newest first; monthly
-    runs the picked year January downwards (so the chart reads chronologically)
-    with unreached months blank.
+    The period column is a rolling TODAY-anchored window, oldest first, so
+    the tables (and the monthly chart) read chronologically: a plain first
+    cell and each row below one period past the one above. It ignores the
+    date controls (those scope the break-out tables). Only monthly can have
+    blank rows (months past TODAY), so only its metric cells are guarded.
 
     Returns (header_row, first_data_row) for the chart and the compare-picker
     dropdowns; None when there are no metrics.
@@ -409,12 +412,10 @@ def _add_period_matrix(page, v, dim_specs, pickers):
     page.write("A{}".format(title_row), [["By {}".format(v.granularity)]])
     page.write("A{}".format(header_row), [["Period"] + v.metric_names])
 
-    periods = [[period_start_formula(v.granularity, pickers, v.dates_src)]]
-    first_cell = "$A${}".format(first_data)
+    periods = [[period_start_formula(v.granularity)]]
     for j in range(1, v.num_periods):
         periods.append(
-            [period_next_formula(v.granularity, "A{}".format(first_data + j - 1),
-                                 pickers, first_cell)]
+            [period_next_formula(v.granularity, "A{}".format(first_data + j - 1))]
         )
     page.write_formulas("A{}".format(first_data), periods)
 
@@ -423,15 +424,15 @@ def _add_period_matrix(page, v, dim_specs, pickers):
         prow = first_data + j
         cell = "A{}".format(prow)
         cell_of = _metric_cell_of(v, 2, prow)
-        matrix.append([
-            blank_guarded(
-                calc_cell_formula(m.formula, cell_of) if is_calculated(m)
-                else bucket_formula(m, v.date_range, cell, v.granularity,
-                                    dim_specs, v.sentinel),
-                cell,
-            )
+        row = [
+            calc_cell_formula(m.formula, cell_of) if is_calculated(m)
+            else bucket_formula(m, v.date_range, cell, v.granularity,
+                                dim_specs, v.sentinel)
             for m in v.metric_fields
-        ])
+        ]
+        if v.granularity == "month":
+            row = [blank_guarded(f, cell) for f in row]
+        matrix.append(row)
     page.write_formulas("B{}".format(first_data), matrix)
 
     page.fmt.append(theme.section_title(page.sheet_id, title_row - 1, v.kpi_last_col))
@@ -450,8 +451,13 @@ def _add_period_matrix(page, v, dim_specs, pickers):
     return header_row, first_data
 
 
-def _add_breakout_tables(page, v, dim_specs):
-    """One totals-per-value table per broken-out dimension, stacked in order."""
+def _add_breakout_tables(page, v, dim_specs, pickers):
+    """One totals-per-value table per broken-out dimension, stacked in order.
+
+    Each total is scoped to the tab's date controls (the pickers at the top
+    of the sheet); a blank picker cell leaves that side of the window open.
+    """
+    lower, upper = picker_window_criteria(v.granularity, pickers)
     for bd in v.breakouts:
         all_vals = v.breakout_values.get(bd, [])
         # Cap high-cardinality dimensions so one break-out cannot push a table
@@ -477,7 +483,8 @@ def _add_breakout_tables(page, v, dim_specs):
                 cell_of = _metric_cell_of(v, 2, vrow)
                 block.append([
                     calc_cell_formula(m.formula, cell_of) if is_calculated(m)
-                    else breakout_formula(m, bd_range, vcell, other_specs, v.sentinel)
+                    else breakout_formula(m, bd_range, vcell, v.date_range,
+                                          lower, upper, other_specs, v.sentinel)
                     for m in v.metric_fields
                 ])
             page.write_formulas("B{}".format(first_data), block)
@@ -528,8 +535,8 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
     dim_specs, drop_positions, pickers = _add_filter_header(page, v)
     _add_kpi_strip(page, v, dim_specs)
     _add_compare_block(page, v, dim_specs)
-    matrix = _add_period_matrix(page, v, dim_specs, pickers)
-    _add_breakout_tables(page, v, dim_specs)
+    matrix = _add_period_matrix(page, v, dim_specs)
+    _add_breakout_tables(page, v, dim_specs, pickers)
     _add_dropdowns(page, v, drop_positions)
 
     end_row = page.row

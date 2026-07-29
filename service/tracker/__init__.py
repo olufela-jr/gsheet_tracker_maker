@@ -53,6 +53,7 @@ from .formulas import (
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
+    picker_window_criteria,
     range_guarded,
     serial_to_date,
     sumifs_expr,

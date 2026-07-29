@@ -111,10 +111,10 @@ class TestBuildView:
         assert result["periods"] == 12
         assert result["metrics"] == ["Spend", "Clicks", "CPC"]
 
-        # Header row one: the Year dropdown defaulting to the current year.
+        # Header row one: the Year dropdown defaulting to yesterday's year.
         # (Header 3-4, KPI 6-7, compare 9-12, matrix 14-16+.)
         year = client._find_write(client.formula_writes, "A3")
-        assert year == [["Year", "=YEAR(TODAY())"]]
+        assert year == [["Year", "=YEAR(TODAY()-1)"]]
 
         # KPI header row: "Totals" + metric names.
         kpi = client._find_write(client.raw_writes, "A6")
@@ -126,12 +126,16 @@ class TestBuildView:
         assert grand[0].startswith("=SUMIFS(Spend")
         assert grand[2] == '=IFERROR(B7/C7, "")'
 
-        # The period column anchors on 1 January of the picked year and steps
-        # forward one month per row, going blank once past the current month.
+        # The period column anchors on 1 January of yesterday's year (the
+        # Year dropdown scopes the break-outs, not the matrix) and steps
+        # forward one month per row, blanking past the month containing
+        # yesterday.
         periods = client._find_write(client.formula_writes, "A16")
         assert len(periods) == 12
-        assert periods[0] == ["=DATE($B$3,1,1)"]
-        assert periods[1] == ['=IF(A16="","",IF(EDATE(A16,1)>TODAY(),"",EDATE(A16,1)))']
+        assert periods[0] == ["=DATE(YEAR(TODAY()-1),1,1)"]
+        assert periods[1] == [
+            '=IF(A16="","",IF(EDATE(A16,1)>TODAY()-1,"",EDATE(A16,1)))'
+        ]
 
         # Main matrix: one column per metric (no change % columns); monthly
         # bounds use EOMONTH and each cell is blanked while its period cell
@@ -224,7 +228,7 @@ class TestBuildView:
         matrix = client._find_write(client.formula_writes, "B11")
         assert "(A11+1)" in matrix[0][0]
 
-    def test_daily_window_follows_the_date_dropdowns(self):
+    def test_daily_rolling_window_and_date_dropdowns(self):
         client = _client(DEFAULT_CONFIG.daily_tab)
         result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
         assert result["periods"] == 14
@@ -243,23 +247,21 @@ class TestBuildView:
             and dv["range"]["startRowIndex"] == 2
         ]
         assert len(date_dds) == 2  # Date from + Date to
-        # The period column runs newest first from the picked end date —
-        # falling back to the newest available date — and blanks out before
-        # the picked start (or 14 days below the effective end).
+        # The period column is a plain rolling window, oldest first: the last
+        # 14 days ending yesterday, ignoring the date dropdowns (they scope
+        # the break-outs).
         periods = client._find_write(client.formula_writes, "A11")
         assert len(periods) == 14
-        assert periods[0] == ["=IF($D$3=\"\",MAX('mapping'!B2:B),$D$3)"]
-        assert periods[1] == [
-            '=IF(A11="","",IF(A11-1<IF($B$3="",$A$11-13,$B$3),"",A11-1))'
-        ]
-        # Metric cells blank alongside their period cell; the calculated CPC
-        # references its row's sibling cells inside the same guard.
+        assert periods[0] == ["=TODAY()-14"]
+        assert periods[1] == ["=A11+1"]
+        # The window always fills, so metric cells are unguarded; the
+        # calculated CPC references its row's sibling cells.
         matrix = client._find_write(client.formula_writes, "B11")
-        assert matrix[0][0].startswith('=IF(A11="","",SUMIFS(Spend')
-        assert matrix[0][2] == '=IF(A11="","",IFERROR(B11/C11, ""))'
-        assert matrix[1][2] == '=IF(A12="","",IFERROR(B12/C12, ""))'
+        assert matrix[0][0].startswith("=SUMIFS(Spend")
+        assert matrix[0][2] == '=IFERROR(B11/C11, "")'
+        assert matrix[1][2] == '=IFERROR(B12/C12, "")'
 
-    def test_weekly_window_follows_the_date_pickers(self):
+    def test_weekly_rolling_window_and_date_pickers(self):
         client = _client(DEFAULT_CONFIG.weekly_tab)
         result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         assert result["periods"] == 6
@@ -270,14 +272,12 @@ class TestBuildView:
         rows = client._find_write(client.formula_writes, "A10")
         assert rows[0][:2] == ["", ""]
         assert rows[1][:2] == ["", ""]
-        # Matrix data at A16: Monday week-starts, newest first, blanking
-        # before the week containing the picked start date.
+        # Matrix data at A16: the last 6 Monday week-starts, oldest first,
+        # ending on the week containing yesterday; pickers don't drive it.
         periods = client._find_write(client.formula_writes, "A16")
         assert len(periods) == 6
-        assert periods[0] == ["=$D$3-WEEKDAY($D$3,3)"]
-        assert periods[1] == [
-            '=IF(A16="","",IF(A16-7<$B$3-WEEKDAY($B$3,3),"",A16-7))'
-        ]
+        assert periods[0] == ["=TODAY()-1-WEEKDAY(TODAY()-1,3)-35"]
+        assert periods[1] == ["=A16+7"]
         # One column per metric, no delta columns.
         matrix = client._find_write(client.formula_writes, "B16")
         assert len(matrix[0]) == 3
@@ -345,12 +345,16 @@ class TestBuildView:
         assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
         # Its values come from the Mapping tab.
         assert client._has_raw([["North"], ["South"]])
-        # A break-out cell pins the dimension to the row's value label.
+        # A break-out cell pins the dimension to the row's value label and is
+        # bounded by the tab's date pickers (blank picker = unbounded side).
         breakout = [
             w for w in client.formula_writes
             if w["values"] and "SUMIFS(Spend, Region, A" in str(w["values"][0][0])
         ]
         assert breakout
+        cell = breakout[0]["values"][0][0]
+        assert 'Day, ">="&IF($B$3="",0,$B$3)' in cell
+        assert 'Day, "<"&IF($D$3="",9.9E+307,$D$3+1)' in cell
 
 
 class TestBuildViews:

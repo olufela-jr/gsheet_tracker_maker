@@ -28,6 +28,7 @@ from tracker import (
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
+    picker_window_criteria,
     range_guarded,
     read_setup,
     number_format_pattern,
@@ -86,47 +87,57 @@ class TestBucketing:
 
 class TestPeriodWindows:
     PICKERS = ("$B$3", "$D$3")
-    DATES_SRC = "'mapping'!B2:B"
 
     def test_window_sizes(self):
         assert PERIOD_ROWS == {"day": 14, "week": 6, "month": 12}
 
     def test_picker_defaults_are_rolling_windows(self):
         assert picker_default_formulas("week") == ("=TODAY()-28", "=TODAY()-1")
-        assert picker_default_formulas("month") == "=YEAR(TODAY())"
+        assert picker_default_formulas("month") == "=YEAR(TODAY()-1)"
         # Daily has no defaults: its dropdowns start blank.
         with pytest.raises(ValueError):
             picker_default_formulas("day")
 
-    def test_daily_falls_back_to_the_newest_available_dates(self):
-        assert period_start_formula("day", self.PICKERS, self.DATES_SRC) == (
-            "=IF($D$3=\"\",MAX('mapping'!B2:B),$D$3)"
-        )
-        assert period_next_formula("day", "A11", self.PICKERS, "$A$11") == (
-            '=IF(A11="","",IF(A11-1<IF($B$3="",$A$11-13,$B$3),"",A11-1))'
-        )
+    def test_daily_rolls_fourteen_days_ending_yesterday(self):
+        assert period_start_formula("day") == "=TODAY()-14"
+        assert period_next_formula("day", "A11") == "=A11+1"
 
-    def test_weekly_runs_monday_starts_back_to_the_start_week(self):
-        assert period_start_formula("week", self.PICKERS) == (
-            "=$D$3-WEEKDAY($D$3,3)"
+    def test_weekly_rolls_six_monday_start_weeks(self):
+        assert period_start_formula("week") == (
+            "=TODAY()-1-WEEKDAY(TODAY()-1,3)-35"
         )
-        assert period_next_formula("week", "A21", self.PICKERS) == (
-            '=IF(A21="","",IF(A21-7<$B$3-WEEKDAY($B$3,3),"",A21-7))'
-        )
+        assert period_next_formula("week", "A21") == "=A21+7"
 
-    def test_monthly_starts_january_and_blanks_past_today(self):
-        assert period_start_formula("month", "$B$3") == "=DATE($B$3,1,1)"
-        assert period_next_formula("month", "A21", "$B$3") == (
-            '=IF(A21="","",IF(EDATE(A21,1)>TODAY(),"",EDATE(A21,1)))'
+    def test_monthly_starts_january_and_blanks_past_yesterday(self):
+        # Yesterday's year, so on 1 January the view still reads as the full
+        # year that ended yesterday, not an empty new year.
+        assert period_start_formula("month") == "=DATE(YEAR(TODAY()-1),1,1)"
+        assert period_next_formula("month", "A21") == (
+            '=IF(A21="","",IF(EDATE(A21,1)>TODAY()-1,"",EDATE(A21,1)))'
         )
 
     def test_unknown_granularity_raises(self):
         with pytest.raises(ValueError):
             picker_default_formulas("year")
         with pytest.raises(ValueError):
-            period_start_formula("year", self.PICKERS)
+            period_start_formula("year")
         with pytest.raises(ValueError):
-            period_next_formula("year", "A2", self.PICKERS)
+            period_next_formula("year", "A2")
+        with pytest.raises(ValueError):
+            picker_window_criteria("year", self.PICKERS)
+
+    def test_picker_window_leaves_blank_sides_unbounded(self):
+        # The break-out tables' date bounds: a blank picker cell must not
+        # error the SUMIFS, it opens that side of the window instead.
+        lower, upper = picker_window_criteria("week", self.PICKERS)
+        assert lower == '">="&IF($B$3="",0,$B$3)'
+        assert upper == '"<"&IF($D$3="",9.9E+307,$D$3+1)'
+        assert picker_window_criteria("day", self.PICKERS) == (lower, upper)
+
+    def test_picker_window_month_covers_the_picked_year(self):
+        lower, upper = picker_window_criteria("month", "$B$3")
+        assert lower == '">="&IF($B$3="",0,DATE($B$3,1,1))'
+        assert upper == '"<"&IF($B$3="",9.9E+307,DATE($B$3+1,1,1))'
 
     def test_blank_guarded_wraps_a_formula(self):
         assert blank_guarded("=SUM(B:B)", "A5") == '=IF(A5="","",SUM(B:B))'
