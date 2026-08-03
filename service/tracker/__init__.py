@@ -60,6 +60,7 @@ from .formulas import (
 )
 from .scaffold import (
     create_named_ranges,
+    ensure_grid,
     ensure_tab,
     existing_titles,
     generate_mapping,

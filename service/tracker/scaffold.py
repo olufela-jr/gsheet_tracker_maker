@@ -41,6 +41,44 @@ def ensure_tab(client, title):
         client.batch_update([{"addSheet": {"properties": {"title": title}}}])
 
 
+def ensure_grid(client, title, rows, cols):
+    """Grow a tab's grid so it covers at least rows x cols, and return its size.
+
+    addSheet gives a tab Sheets' default 1000 x 26 grid. A view's stacked
+    blocks (a break-out table per dimension) can reach past that, and the API
+    rejects any request whose range exceeds the grid rather than expanding it.
+    Only ever grows: lowering a count would delete the cells beyond it.
+
+    Returns the tab's (rowCount, columnCount) after any growth, so callers can
+    clamp tab-wide ranges to it. Returns None for an unknown tab.
+    """
+    for sheet in client.get_spreadsheet().get("sheets", []):
+        props = sheet.get("properties", {})
+        if (props.get("title") or "").lower() != title.lower():
+            continue
+        grid = props.get("gridProperties", {})
+        have_rows, have_cols = grid.get("rowCount", 0), grid.get("columnCount", 0)
+        want_rows, want_cols = max(rows, have_rows), max(cols, have_cols)
+        if (want_rows, want_cols) == (have_rows, have_cols):
+            return have_rows, have_cols
+        client.batch_update([
+            {
+                "updateSheetProperties": {
+                    "properties": {
+                        "sheetId": props.get("sheetId"),
+                        "gridProperties": {
+                            "rowCount": want_rows,
+                            "columnCount": want_cols,
+                        },
+                    },
+                    "fields": "gridProperties.rowCount,gridProperties.columnCount",
+                }
+            }
+        ])
+        return want_rows, want_cols
+    return None
+
+
 def require_input_tabs(client, cfg):
     """Raise a clear error if the input tabs are missing.
 
@@ -188,6 +226,13 @@ def create_named_ranges(client, cfg):
     at a row count, or aimed at the wrong column — so re-running this repairs
     a sheet whose ranges were bounded instead of leaving them to be fixed by
     hand in the Named ranges panel.
+
+    Existing names are matched case-insensitively, because that is how Sheets
+    itself scopes them: 'Year' and 'year' are one name, not two. Matching
+    exactly would miss the existing range, try to add a second one, and fail
+    the whole run on a collision the sheet could never resolve by re-running.
+    A range found under a different casing is renamed to the sanitised header,
+    which is safe — Sheets resolves references case-insensitively too.
     """
     headers = read_data_source_headers(client, cfg)
     sheet_id = client.get_sheet_id(cfg.data_source_tab)
@@ -196,7 +241,9 @@ def create_named_ranges(client, cfg):
             "Data Source tab '{}' was not found.".format(cfg.data_source_tab)
         )
 
-    existing = client.get_named_ranges()
+    # Keyed by the case-insensitive identity Sheets enforces, not the literal
+    # spelling, so a range stored as 'year' is found when looking up 'Year'.
+    existing = {n.lower(): nr for n, nr in client.get_named_ranges().items()}
     seen = set()
     requests = []
     created = []
@@ -207,35 +254,45 @@ def create_named_ranges(client, cfg):
         if header is None or str(header).strip() == "":
             continue
         name = sanitise_name(header)
+        key = name.lower()
         # Track names within this batch too, so two headers that sanitise to
         # the same name do not collide.
-        if name in seen:
+        if key in seen:
             skipped.append(name)
             continue
-        seen.add(name)
+        seen.add(key)
 
         wanted = _data_source_range(sheet_id, col_index)
-        current = existing.get(name)
+        current = existing.get(key)
         if current is None:
             requests.append(
                 {"addNamedRange": {"namedRange": {"name": name, "range": wanted}}}
             )
             created.append(name)
-        elif _matches_range(current.get("range"), wanted):
+            continue
+
+        # Repair whichever part has drifted: the range's shape, the spelling,
+        # or both. Sending only the changed fields keeps a re-run a no-op.
+        named_range = {"namedRangeId": current["namedRangeId"]}
+        fields = []
+        if not _matches_range(current.get("range"), wanted):
+            named_range["range"] = wanted
+            fields.append("range")
+        if current.get("name") != name:
+            named_range["name"] = name
+            fields.append("name")
+        if not fields:
             skipped.append(name)
-        else:
-            requests.append(
-                {
-                    "updateNamedRange": {
-                        "namedRange": {
-                            "namedRangeId": current["namedRangeId"],
-                            "range": wanted,
-                        },
-                        "fields": "range",
-                    }
+            continue
+        requests.append(
+            {
+                "updateNamedRange": {
+                    "namedRange": named_range,
+                    "fields": ",".join(fields),
                 }
-            )
-            updated.append(name)
+            }
+        )
+        updated.append(name)
 
     if requests:
         client.batch_update(requests)

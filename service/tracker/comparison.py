@@ -45,7 +45,7 @@ from .formulas import (
     calc_cell_formula,
     number_format_pattern,
 )
-from .scaffold import ensure_tab
+from .scaffold import ensure_grid, ensure_tab
 
 # Rows in the Comparison tab's trend helper: the most periods a side's date
 # range can chart (e.g. 52 weeks). Beyond this the trend line simply stops.
@@ -357,10 +357,13 @@ def build_comparison(client, cfg, fields=None, headers=None, serials=None):
     _add_trend_helper(page, v, L, mp, gp, sides)
     _add_dropdowns(page, v, L)
 
-    page.flush_values(client)
-
     end_row = L.hp_first_row + COMPARISON_PERIODS + 2
     end_col = _HP + 7
+    # The metrics table and helper block grow with the setup; make the grid fit
+    # before writing, since a range past the last row or column is an error.
+    ensure_grid(client, v.tab, end_row + 1, end_col)
+    page.flush_values(client)
+
     fmt = [
         theme.hide_gridlines(sheet_id),
         theme.canvas(sheet_id, end_row, end_col),

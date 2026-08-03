@@ -72,11 +72,16 @@ from .formulas import (
     picker_window_criteria,
     range_guarded,
 )
-from .scaffold import ensure_tab
+from .scaffold import ensure_grid, ensure_tab
 
 # Most values a single break-out table renders, so a high-cardinality dimension
 # cannot stack thousands of rows. The cap is shown in the table title.
 MAX_BREAKOUT_VALUES = 50
+
+# How wide the tab-wide validation clear sweeps before the dropdowns go back
+# on, to catch rules left by an earlier, wider layout. Clamped to the tab's
+# actual width at use, since a clear past the last column is an error.
+DV_CLEAR_COLS = 60
 
 # Everything the block builders need about one view, resolved once.
 #   metrics_meta:  (is_calculated, number_format_pattern) per metric
@@ -540,6 +545,9 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
     _add_dropdowns(page, v, drop_positions)
 
     end_row = page.row
+    # The blocks stack as tall as the break-outs need, which on a many-dimension
+    # tracker runs past a new tab's 1000 rows; grow the grid before writing.
+    grid = ensure_grid(client, tab, end_row + 1, v.end_col)
     page.flush_values(client)
 
     fmt = [
@@ -552,7 +560,11 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
     ]
     fmt.extend(page.fmt)
     # Clear the used area's validations, then add the dropdowns.
-    fmt.append({"setDataValidation": {"range": grid_dv(sheet_id, 0, end_row, 0, 60)}})
+    # Clamped to the tab's real width: there can be no rules past the last
+    # column, and a range that overshoots it is rejected outright.
+    dv_cols = min(DV_CLEAR_COLS, grid[1]) if grid else DV_CLEAR_COLS
+    fmt.append({"setDataValidation": {
+        "range": grid_dv(sheet_id, 0, end_row, 0, dv_cols)}})
     fmt.extend(page.validations)
     if granularity == "month":
         for chart_id in existing_chart_ids(client, sheet_id):

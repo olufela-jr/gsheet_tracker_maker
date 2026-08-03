@@ -10,6 +10,7 @@ from tracker import (
     build_tracker_record,
     create_named_ranges,
     date_to_serial,
+    ensure_grid,
     generate_mapping,
     log_tracker,
     require_input_tabs,
@@ -146,6 +147,74 @@ class TestGenerateMapping:
         ]
         assert len(date_fmt) == 1
         assert date_fmt[0]["range"]["endRowIndex"] == 4  # header + 3 dates
+
+
+class FakeGrid:
+    """Fake client exposing one tab's grid size, recording batch updates."""
+
+    def __init__(self, rows, cols, title="Daily", sheet_id=7):
+        self._props = {
+            "title": title,
+            "sheetId": sheet_id,
+            "gridProperties": {"rowCount": rows, "columnCount": cols},
+        }
+        self.batch_requests = []
+
+    def get_spreadsheet(self):
+        return {"sheets": [{"properties": self._props}]}
+
+    def batch_update(self, requests):
+        self.batch_requests.append(requests)
+
+
+def grid_of(client):
+    props = client.batch_requests[0][0]["updateSheetProperties"]["properties"]
+    return props["gridProperties"]
+
+
+class TestEnsureGrid:
+    def test_no_update_when_the_grid_already_fits(self):
+        client = FakeGrid(1000, 26)
+        ensure_grid(client, "Daily", 500, 20)
+        assert client.batch_requests == []
+
+    def test_no_update_when_the_grid_fits_exactly(self):
+        client = FakeGrid(1000, 26)
+        ensure_grid(client, "Daily", 1000, 26)
+        assert client.batch_requests == []
+
+    def test_grows_rows_past_the_default(self):
+        client = FakeGrid(1000, 26)
+        ensure_grid(client, "Daily", 1200, 26)
+        assert grid_of(client) == {"rowCount": 1200, "columnCount": 26}
+
+    def test_grows_columns_past_the_default(self):
+        client = FakeGrid(1000, 26)
+        ensure_grid(client, "Daily", 100, 60)
+        assert grid_of(client) == {"rowCount": 1000, "columnCount": 60}
+
+    def test_never_shrinks_the_other_dimension(self):
+        # Growing rows must not narrow a tab that is already wider than asked.
+        client = FakeGrid(1000, 80)
+        ensure_grid(client, "Daily", 1200, 60)
+        assert grid_of(client) == {"rowCount": 1200, "columnCount": 80}
+
+    def test_targets_the_named_tab_by_its_sheet_id(self):
+        client = FakeGrid(1000, 26, sheet_id=42)
+        ensure_grid(client, "Daily", 1200, 26)
+        props = client.batch_requests[0][0]["updateSheetProperties"]
+        assert props["properties"]["sheetId"] == 42
+        assert props["fields"] == "gridProperties.rowCount,gridProperties.columnCount"
+
+    def test_matches_the_tab_case_insensitively(self):
+        client = FakeGrid(1000, 26, title="DAILY")
+        ensure_grid(client, "daily", 1200, 26)
+        assert grid_of(client) == {"rowCount": 1200, "columnCount": 26}
+
+    def test_unknown_tab_is_left_alone(self):
+        client = FakeGrid(1000, 26)
+        ensure_grid(client, "Nope", 5000, 90)
+        assert client.batch_requests == []
 
 
 class TestRequireInputTabs:
@@ -338,3 +407,52 @@ class TestCreateNamedRanges:
         client.get_sheet_id = lambda title: None
         with pytest.raises(ValueError):
             create_named_ranges(client, DEFAULT_CONFIG)
+
+
+class TestNamedRangeCasing:
+    """Sheets scopes named ranges case-insensitively: 'Year' and 'year' are
+    one name. Matching existing ranges by exact spelling missed them, so a
+    header whose capitalisation changed produced an addNamedRange for a name
+    that already existed — a 400 that wedged every later run.
+    """
+
+    def test_existing_range_in_another_case_is_not_re_added(self):
+        client = FakeNamedRanges(["Year"], {"year": _existing("year", 0)})
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["created"] == []
+        adds = [r for r in client.batch_requests if "addNamedRange" in r]
+        assert adds == []
+
+    def test_existing_range_in_another_case_is_renamed(self):
+        client = FakeNamedRanges(["Year"], {"year": _existing("year", 0)})
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["updated"] == ["Year"]
+        update = client.batch_requests[0]["updateNamedRange"]
+        assert update["namedRange"]["namedRangeId"] == "id_year"
+        assert update["namedRange"]["name"] == "Year"
+        # Only the spelling drifted, so the range is left out of the update.
+        assert update["fields"] == "name"
+
+    def test_casing_and_range_drift_are_repaired_together(self):
+        client = FakeNamedRanges(
+            ["Year"], {"year": _existing("year", 0, endRowIndex=1000)}
+        )
+        create_named_ranges(client, DEFAULT_CONFIG)
+        update = client.batch_requests[0]["updateNamedRange"]
+        assert update["fields"] == "range,name"
+        assert "endRowIndex" not in update["namedRange"]["range"]
+        assert update["namedRange"]["name"] == "Year"
+
+    def test_matching_range_and_spelling_stays_a_no_op(self):
+        client = FakeNamedRanges(["Year"], {"Year": _existing("Year", 0)})
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["skipped"] == ["Year"]
+        assert client.batch_requests == []
+
+    def test_two_headers_differing_only_in_case_yield_one_range(self):
+        # Both sanitise into the same Sheets name, so the second must not be
+        # added on top of the first.
+        client = FakeNamedRanges(["Year", "year"])
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["created"] == ["Year"]
+        assert len(client.batch_requests) == 1

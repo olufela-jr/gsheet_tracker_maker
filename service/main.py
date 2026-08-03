@@ -22,6 +22,7 @@ and returns.
 
 import json
 import os
+import traceback
 import uuid
 from datetime import datetime, timezone
 
@@ -74,6 +75,23 @@ def _audit(caller, action, spreadsheet_id, result, **extra):
     print(json.dumps(record), flush=True)
 
 
+def _sheets_reason(exc):
+    """The human-readable reason out of an HttpError, e.g. the bad request.
+
+    str(HttpError) wraps the reason in boilerplate ("<HttpError 400 when
+    requesting ... returned ...>"). The API's own message is the part worth
+    putting in front of an operator, so prefer it and fall back to the wrapper.
+    """
+    try:
+        body = json.loads(exc.content.decode("utf-8"))
+        message = body.get("error", {}).get("message")
+        if message:
+            return message
+    except Exception:  # noqa: BLE001 - a non-JSON body just means no reason
+        pass
+    return str(exc)
+
+
 def _run(work, ok_message):
     """Run a unit of work and map any failure to a JSON error response."""
     try:
@@ -82,9 +100,21 @@ def _run(work, ok_message):
     except tracker.ValidationError as exc:
         return _error("Validation failed", {"errors": exc.errors}, 400)
     except HttpError as exc:
-        return _error("Sheets API error", {"error": str(exc)}, 502)
+        # The response body is all the operator ever sees, and the caller may
+        # show only part of it. Log the whole thing so the cause survives.
+        traceback.print_exc()
+        status = getattr(exc.resp, "status", "?")
+        reason = _sheets_reason(exc)
+        # `errors` is the list callers already surface, so the reason reaches
+        # the operator rather than dying as a bare "Sheets API error".
+        return _error(
+            "Sheets API error ({})".format(status),
+            {"errors": [reason], "error": str(exc)},
+            502,
+        )
     except Exception as exc:  # noqa: BLE001 - return any other failure as JSON
-        return _error(str(exc), {}, 500)
+        traceback.print_exc()
+        return _error(str(exc), {"errors": [str(exc)]}, 500)
 
 
 @app.get("/healthz")

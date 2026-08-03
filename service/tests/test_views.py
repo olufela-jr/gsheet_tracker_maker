@@ -6,6 +6,7 @@ import pytest
 
 from config import DEFAULT_CONFIG
 from tracker import (
+    MAX_BREAKOUT_VALUES,
     ValidationError,
     build_comparison,
     build_view,
@@ -27,6 +28,9 @@ class FakeClient:
         self._date_serials = date_serials
         self._tabs = dict(tabs)  # title -> sheetId
         self._mapping = mapping_rows or []
+        # Sheets' default grid for a newly added tab.
+        self.grid_rows = 1000
+        self.grid_cols = 26
         self.spreadsheet_id = "SHEET"
         self.raw_writes = []
         self.formula_writes = []
@@ -49,9 +53,21 @@ class FakeClient:
         return []
 
     def get_spreadsheet(self):
+        # gridProperties mirror what addSheet really gives a new tab, so the
+        # grid-growth path behaves here as it does against the API.
         return {
             "sheets": [
-                {"properties": {"title": t, "sheetId": sid}, "charts": []}
+                {
+                    "properties": {
+                        "title": t,
+                        "sheetId": sid,
+                        "gridProperties": {
+                            "rowCount": self.grid_rows,
+                            "columnCount": self.grid_cols,
+                        },
+                    },
+                    "charts": [],
+                }
                 for t, sid in self._tabs.items()
             ]
         }
@@ -380,6 +396,81 @@ class TestBuildViews:
         header_reads = [r for r in client.reads if "1:1" in r]
         assert len(setup_reads) == 1
         assert len(header_reads) == 1
+
+
+class TestGridFits:
+    """A tab's grid has to cover every range the build writes into it.
+
+    The Sheets API rejects an out-of-bounds range outright, so a tracker with
+    enough broken-out dimensions to stack past the default 1000 rows used to
+    fail the whole run with a bare "Sheets API error".
+    """
+
+    def _grid_updates(self, client):
+        return [
+            r["updateSheetProperties"]["properties"]["gridProperties"]
+            for batch in client.batch_updates for r in batch
+            if "updateSheetProperties" in r
+            and "rowCount" in r["updateSheetProperties"]["properties"]
+                .get("gridProperties", {})
+        ]
+
+    def _tall_client(self, n_breakouts):
+        # Each broken-out dimension adds a table of up to MAX_BREAKOUT_VALUES
+        # rows, so enough of them push the tab past 1000 rows.
+        setup = [["Day", "date", "", "", "", ""]]
+        dims = ["Dim{}".format(i) for i in range(n_breakouts)]
+        for dim in dims:
+            setup.append([dim, "dimension", "", "", "TRUE", "TRUE"])
+        setup.append(["Spend", "metric", "", "currency", "", ""])
+        mapping = [dims, ["**"] * n_breakouts]
+        for i in range(MAX_BREAKOUT_VALUES):
+            mapping.append(["v{}".format(i)] * n_breakouts)
+        tabs = {"setup": 1, "data_source": 2, DEFAULT_CONFIG.daily_tab: 3}
+        return FakeClient(setup, ["Day"] + dims + ["Spend"],
+                          [date_to_serial(date(2025, 8, 4))], tabs,
+                          mapping_rows=mapping)
+
+    def test_short_tab_leaves_the_default_grid_alone(self):
+        client = _client(DEFAULT_CONFIG.daily_tab, region_breakout="TRUE")
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
+        assert self._grid_updates(client) == []
+
+    def test_tall_tab_grows_the_grid_to_cover_its_rows(self):
+        client = self._tall_client(25)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
+        updates = self._grid_updates(client)
+        assert len(updates) == 1
+        # Grown past the default, and only in the dimension that needed it.
+        assert updates[0]["rowCount"] > 1000
+        assert updates[0]["columnCount"] == 26
+
+    def test_every_written_range_stays_inside_the_grown_grid(self):
+        client = self._tall_client(25)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
+        updates = self._grid_updates(client)
+        rows, cols = updates[0]["rowCount"], updates[0]["columnCount"]
+        for batch in client.batch_updates:
+            for req in batch:
+                for payload in req.values():
+                    rng = payload.get("range") if isinstance(payload, dict) else None
+                    if not isinstance(rng, dict) or "sheetId" not in rng:
+                        continue
+                    assert rng.get("endRowIndex", 0) <= rows
+                    assert rng.get("endColumnIndex", 0) <= cols
+
+    def test_validation_clear_is_clamped_to_the_tab_width(self):
+        # DV_CLEAR_COLS is wider than the default grid; sweeping that far would
+        # be rejected, and there can be no rules past the last column anyway.
+        client = _client(DEFAULT_CONFIG.daily_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.daily_tab, "day")
+        clears = [
+            r["setDataValidation"]["range"] for batch in client.batch_updates
+            for r in batch
+            if "setDataValidation" in r and "rule" not in r["setDataValidation"]
+        ]
+        assert len(clears) == 1
+        assert clears[0]["endColumnIndex"] == 26
 
 
 class TestComparison:
