@@ -237,6 +237,7 @@ class TestLogTracker:
 
 
 DATA_SOURCE_SHEET_ID = 7
+ROW_COUNT = 152227
 
 
 class FakeNamedRanges:
@@ -253,6 +254,18 @@ class FakeNamedRanges:
     def get_sheet_id(self, title):
         return DATA_SOURCE_SHEET_ID
 
+    def get_spreadsheet(self):
+        return {
+            "sheets": [
+                {
+                    "properties": {
+                        "sheetId": DATA_SOURCE_SHEET_ID,
+                        "gridProperties": {"rowCount": ROW_COUNT},
+                    }
+                }
+            ]
+        }
+
     def get_named_ranges(self):
         return self._named
 
@@ -261,12 +274,16 @@ class FakeNamedRanges:
 
 
 def _existing(name, col, **extra):
-    """An existing named range as the API returns it, plus any overrides."""
+    """An existing named range as the API returns it, plus any overrides.
+
+    Bounded at ROW_COUNT, which is how Sheets stores whatever we send.
+    """
     grid = {
         "sheetId": DATA_SOURCE_SHEET_ID,
         "startRowIndex": 1,
         "startColumnIndex": col,
         "endColumnIndex": col + 1,
+        "endRowIndex": ROW_COUNT,
     }
     grid.update(extra)
     return {"namedRangeId": "id_" + name, "name": name, "range": grid}
@@ -278,19 +295,23 @@ class TestCreateNamedRanges:
         result = create_named_ranges(client, DEFAULT_CONFIG)
         assert result["created"] == ["Spend"]
         grid = client.batch_requests[0]["addNamedRange"]["namedRange"]["range"]
-        # Row 2 down, with no bottom bound: 'data_source'!A2:A.
+        # We ask for 'data_source'!A2:A. Sheets stores it bounded at rowCount
+        # regardless, but asking open-ended is what pins it to the CURRENT
+        # height rather than a stale one.
         assert grid["startRowIndex"] == 1
         assert "endRowIndex" not in grid
 
-    def test_range_already_open_ended_is_left_alone(self):
+    def test_range_bounded_at_the_grid_is_left_alone(self):
+        # The convergence case: bounded at rowCount is as open as Sheets
+        # allows, so it must not be rewritten on every run.
         client = FakeNamedRanges(["Spend"], {"Spend": _existing("Spend", 0)})
         result = create_named_ranges(client, DEFAULT_CONFIG)
         assert result == {"created": [], "updated": [], "skipped": ["Spend"]}
         assert client.batch_requests == []
 
-    def test_capped_range_is_repaired(self):
-        # The bug: a range bounded at the sheet's row count stops feeding the
-        # SUMIFS once the data grows past it. Re-running must rewrite it.
+    def test_range_bounded_short_of_the_grid_is_repaired(self):
+        # The real defect: the grid grew and the bound did not follow, so rows
+        # past it have dropped out of the SUMIFS.
         client = FakeNamedRanges(
             ["Spend"], {"Spend": _existing("Spend", 0, endRowIndex=1000)}
         )
@@ -300,6 +321,16 @@ class TestCreateNamedRanges:
         assert update["fields"] == "range"
         assert update["namedRange"]["namedRangeId"] == "id_Spend"
         assert "endRowIndex" not in update["namedRange"]["range"]
+
+    def test_unbounded_range_is_left_alone(self):
+        # Ranges the Sheets UI created can be genuinely unbounded. Nothing to
+        # repair — that is strictly better than what the API can write.
+        stored = _existing("Spend", 0)
+        del stored["range"]["endRowIndex"]
+        client = FakeNamedRanges(["Spend"], {"Spend": stored})
+        result = create_named_ranges(client, DEFAULT_CONFIG)
+        assert result["skipped"] == ["Spend"]
+        assert client.batch_requests == []
 
     def test_range_on_the_wrong_column_is_repointed(self):
         # Spend is column B here, but its range still points at column A.

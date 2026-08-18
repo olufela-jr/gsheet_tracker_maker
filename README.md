@@ -94,7 +94,13 @@ Operate on a sheet (`{"token": "...", "spreadsheet_id": "...", "action": "..."}`
 - `generate_mapping` ensures the mapping tab exists, then writes one column per
   dimension with its distinct sorted values (mapping is cleared first).
 - `create_named_ranges` creates one named range per data_source column,
-  pointing at `'data_source'!<col>2:<col>`. Existing names are skipped.
+  pointing at `'data_source'!<col>2:<col>`. Existing names are re-pointed when
+  they have drifted (wrong column, or bounded short of the grid).
+
+  Note that the API cannot store an unbounded named range: whatever range is
+  sent, Sheets writes back an explicit end row pinned to the tab's current row
+  count, and that bound does not grow when the grid does. Rows added after the
+  last run therefore fall outside the ranges until the tracker is refreshed.
 - `build_views` rebuilds the three view tabs (daily, weekly, monthly): a
   banner, filter dropdowns, a KPI strip, and a per-bucket SUMIFS matrix, plus a
   line chart on the monthly tab.
@@ -220,20 +226,31 @@ build it. Full runbook in [SETUP.txt](SETUP.txt).
 
 ## Local development
 
-Run the unit tests (sanitisation, distinct value extraction, SUMIFS strings):
+Run the unit tests (sanitisation, distinct value extraction, SUMIFS strings).
+These drive fakes rather than the Sheets API, so they need nothing installed
+beyond pytest:
 
 ```sh
 cd service
 python -m pytest tests/ -q
 ```
 
-Run the service locally (you will need Application Default Credentials with
-access to the target sheet):
+Running the service itself does need the dependencies. Create a virtualenv at
+the repo root (`.venv` is gitignored) so the local interpreter mirrors what
+Cloud Run builds from:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r service/requirements.txt
+.venv/bin/pip install pytest          # test-only, not a runtime dependency
+```
+
+Then run the service locally (you will need Application Default Credentials
+with access to the target sheet):
 
 ```sh
 cd service
-pip install -r requirements.txt
-python main.py
+../.venv/bin/python main.py
 # then: curl -X POST localhost:8080 -H 'Content-Type: application/json' \
 #   -d '{"spreadsheet_id":"...","action":"validate"}'
 ```
