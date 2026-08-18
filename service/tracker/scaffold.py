@@ -10,6 +10,7 @@ from config import column_to_letter, sanitise_name, a1
 
 from .common import read_date_serials
 from .fields import (
+    SETUP_HEADERS,
     ValidationError,
     date_field_of,
     mapping_dimensions_of,
@@ -315,10 +316,12 @@ def scaffold(client, cfg):
     # existing setup the user has filled in is never overwritten.
     created_setup = cfg.setup_tab.lower() in {m.lower() for m in missing}
     if created_setup:
+        # Seeded from SETUP_HEADERS, the same list read_setup resolves columns
+        # by, so the header we write and the header we parse cannot drift.
+        headers = [header for _role, header in SETUP_HEADERS]
         client.write_values(
-            a1(cfg.setup_tab, "A1:G1"),
-            [["Field", "Type", "Formula", "Format", "Show in views",
-              "Break-out table", "Mapping"]],
+            a1(cfg.setup_tab, "A1:{}1".format(column_to_letter(len(headers)))),
+            [headers],
             value_input_option="RAW",
         )
 

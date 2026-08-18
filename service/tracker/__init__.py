@@ -21,16 +21,21 @@ from .audit import TRACKER_FIELDS, build_tracker_record, log_tracker
 from .comparison import COMPARISON_PERIODS, build_comparison
 from .fields import (
     Field,
+    SETUP_HEADERS,
     ValidationError,
     breakout_dimensions_of,
     date_field_of,
     dimensions_of,
     is_calculated,
+    label_of,
+    labels_of,
     mapping_dimensions_of,
     metric_fields_of,
     metrics_of,
     read_data_source_headers,
     read_setup,
+    require_setup_header,
+    setup_columns,
     validate,
 )
 from .formulas import (

@@ -11,22 +11,27 @@ from config import a1, sanitise_name
 
 from .formulas import formula_tokens
 
-# One declared field in the Setup tab.
-#   name:    field name (Setup column A)
-#   type:    "metric" | "dimension" | "date" | "calculated" (column B)
-#   formula: bracket-token expression for a calculated field, or "" (C)
-#   fmt:     "currency" | "percent" | "number" | "" number format hint (D)
+# One declared field in the Setup tab. Columns are resolved by header text
+# (see setup_columns), so these are roles, not fixed positions.
+#   name:    field name — the identity everything binds to: it must match a
+#            Data Source header, it is the named range the SUMIFS reference,
+#            and it is the spelling a [Field] token must use
+#   display: optional label the dashboards render this field under; blank
+#            falls back to name. Presentation only — see label_of
+#   type:    "metric" | "dimension" | "date" | "calculated"
+#   formula: bracket-token expression for a calculated field, or ""
+#   fmt:     "currency" | "percent" | "number" | "" number format hint
 #   show:    dimensions only — True shows the dimension as a filter in the
 #            daily/weekly/monthly views; blank/False keeps it in the data but
-#            hides it from the front end (Setup column E)
+#            hides it from the front end
 #   breakout: dimensions only — True gives the dimension its own break-out
-#            table (totals per value) stacked on every view (Setup column F)
+#            table (totals per value) stacked on every view
 #   mapping: dimensions only — True lists the dimension's values in Mapping
-#            even when it is neither shown nor broken out (Setup column G;
-#            Show / Break-out imply a mapping column regardless)
+#            even when it is neither shown nor broken out (Show / Break-out
+#            imply a mapping column regardless)
 Field = namedtuple(
     "Field",
-    ["name", "type", "formula", "fmt", "show", "breakout", "mapping"],
+    ["name", "display", "type", "formula", "fmt", "show", "breakout", "mapping"],
     defaults=(False, False, False),
 )
 
@@ -40,7 +45,78 @@ class ValidationError(Exception):
 
 
 def _cell(row, i):
+    """The stripped value of a row's column i; "" when the column is absent.
+
+    i is None for an optional role whose header Setup does not carry, which
+    reads the same as a blank cell.
+    """
+    if i is None:
+        return ""
     return (row[i].strip() if len(row) > i and row[i] else "")
+
+
+# The Setup header text that identifies each column role, in the order
+# scaffold seeds them.
+SETUP_HEADERS = (
+    ("name", "Field"),
+    ("display", "Display name"),
+    ("type", "Type"),
+    ("formula", "Formula"),
+    ("fmt", "Format"),
+    ("show", "Show in views"),
+    ("breakout", "Break-out table"),
+    ("mapping", "Mapping"),
+)
+
+# The two columns a Setup tab is unusable without: a field needs a name and a
+# type. Every other column is optional and reads as blank when absent — a
+# tracker with no calculated fields can drop Formula, say.
+REQUIRED_ROLES = ("name", "type")
+
+
+def setup_columns(header_row):
+    """Map each Setup role to its 0-based column index, or None if absent.
+
+    Setup is read by header, never by position, so the columns can be
+    reordered or the optional ones dropped without silently shifting what
+    every row means. A header this does not recognise is simply not one of
+    ours, and a role no header names is absent.
+    """
+    by_header = {field_key(h): role for role, h in SETUP_HEADERS}
+    columns = {role: None for role, _ in SETUP_HEADERS}
+    for i, cell in enumerate(header_row):
+        text = str(cell).strip() if cell is not None else ""
+        if not text:
+            continue
+        role = by_header.get(field_key(text))
+        if role is not None and columns[role] is None:
+            columns[role] = i
+    return columns
+
+
+def require_setup_header(columns):
+    """Raise unless the Setup header row named the columns we must have.
+
+    Reading by header means an unnamed column is an absent one, so a header
+    row that never got seeded (or was overwritten) would otherwise yield zero
+    fields and surface as a puzzling "No metrics declared". Fail here instead,
+    naming the header row as the thing to fix.
+    """
+    missing = [
+        header for role, header in SETUP_HEADERS
+        if role in REQUIRED_ROLES and columns[role] is None
+    ]
+    if missing:
+        raise ValidationError(
+            [
+                "The setup tab's header row does not name a {} column. Row 1 "
+                "must hold the column names: {}. Fix row 1, or re-run scaffold "
+                "on a fresh sheet to seed it.".format(
+                    " or a ".join("'{}'".format(m) for m in missing),
+                    ", ".join(h for _role, h in SETUP_HEADERS),
+                )
+            ]
+        )
 
 
 # Values a Setup "Show" cell may carry: a checkbox (TRUE/FALSE) or a hand-typed
@@ -55,31 +131,36 @@ def _truthy(value):
 def read_setup(client, cfg):
     """Read Setup rows below the header into a list of Field tuples.
 
-    Columns: A name, B type, C formula (calculated metrics), D format hint,
-    E show (dimensions only — checked shows the dimension as a filter in the
-    views, blank hides it), F break-out (dimensions only — checked gives the
-    dimension its own totals-per-value table on every view), G mapping
-    (dimensions only — checked lists the values in Mapping even without
-    Show / Break-out).
+    Row 1 is the header row and names the columns: Field, Display name, Type,
+    Formula (calculated metrics), Format, Show in views (dimensions only —
+    checked shows the dimension as a filter in the views, blank hides it),
+    Break-out table (dimensions only — checked gives the dimension its own
+    totals-per-value table on every view), and Mapping (dimensions only —
+    checked lists the values in Mapping even without Show / Break-out). It is
+    read, not assumed: setup_columns resolves each role from it, so the columns
+    may be reordered and the optional ones left out.
     """
-    rows = client.read_range(a1(cfg.setup_tab, "A2:G"))
+    rows = client.read_range(a1(cfg.setup_tab, "A1:Z"))
+    columns = setup_columns(rows[0] if rows else [])
+    require_setup_header(columns)
     fields = []
-    for row in rows:
+    for row in rows[1:]:
         if not row:
             continue
-        name = _cell(row, 0)
+        name = _cell(row, columns["name"])
         if not name:
             continue
-        ftype = _cell(row, 1).lower()
+        ftype = _cell(row, columns["type"]).lower()
         fields.append(
             Field(
                 name=name,
+                display=_cell(row, columns["display"]),
                 type=ftype,
-                formula=_cell(row, 2),
-                fmt=_cell(row, 3).lower(),
-                show=_truthy(_cell(row, 4)),
-                breakout=_truthy(_cell(row, 5)),
-                mapping=_truthy(_cell(row, 6)),
+                formula=_cell(row, columns["formula"]),
+                fmt=_cell(row, columns["fmt"]).lower(),
+                show=_truthy(_cell(row, columns["show"])),
+                breakout=_truthy(_cell(row, columns["breakout"])),
+                mapping=_truthy(_cell(row, columns["mapping"])),
             )
         )
     return fields
@@ -126,6 +207,27 @@ def resolve_token_(index, token, fields):
     if near:
         message += " Did you mean [{}]?".format(near)
     raise ValidationError([message])
+
+
+def label_of(field):
+    """The name a field renders under in the dashboards.
+
+    Display name is presentation only, and this is the single place the
+    fallback lives. The Field name stays the identity everything binds to —
+    the Data Source header, the named range, the [Field] token, the Mapping
+    column header — so relabelling a metric never re-points a formula.
+    """
+    return field.display or field.name
+
+
+def labels_of(fields):
+    """{field name: dashboard label}, for the blocks that render by name.
+
+    A dict rather than a parallel list: dimensions reach the view builders as
+    bare names (dimensions_of, breakout_dimensions_of), so a label lookup that
+    does not depend on two lists staying in step is the safer shape.
+    """
+    return {f.name: label_of(f) for f in fields}
 
 
 def metric_fields_of(fields):
@@ -226,6 +328,25 @@ def validate(client, cfg):
                 "unique name.".format(f.name)
             )
         seen_fields.setdefault(key, []).append(f.name)
+
+    # Dashboard labels must be unique too. The Comparison tab's metric picker
+    # matches the picked label against the list of labels to choose which
+    # metric to chart, and Sheets' MATCH is case-insensitive, so two fields
+    # displaying the same text would always resolve to the first of them.
+    # Collisions between two blank display names are just duplicate field
+    # names, already reported above, so only flag a pair where a display name
+    # was actually set.
+    seen_labels = {}
+    for f in fields:
+        label = label_of(f)
+        key = label.lower()
+        clash = seen_labels.get(key)
+        if clash is not None and (f.display or clash.display):
+            errors.append(
+                "Fields '{}' and '{}' both display as '{}'; give each field a "
+                "unique display name.".format(clash.name, f.name, label)
+            )
+        seen_labels.setdefault(key, f)
 
     seen_headers = {}
     for header in headers:

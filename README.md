@@ -45,19 +45,28 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
 (`mapping`, `daily`, `weekly`, `monthly`). Tab matching is case-insensitive, so
 `setup` and `Setup` are the same tab.
 
-- **setup** (input) declares the schema. Column A is the field name, column B is
-  the type (`metric`, `dimension`, or `date` - tag exactly one field `date`),
-  column C is an optional `[Field]`-token formula for a calculated metric (for
-  example `[Spend]/[Clicks]`), column D is a number-format hint
-  (`currency`, `percent`, `number`), column E is a per-dimension **Show in
-  views** checkbox, and column F is a per-dimension **Break-out table**
-  checkbox. Only dimensions with Show checked become filter dropdowns; an
+- **setup** (input) declares the schema, one row per field: **Field** (the
+  name), **Display name**, **Type** (`metric`, `dimension`, `date` - tag
+  exactly one field `date` - or `calculated`), **Formula** (a `[Field]`-token
+  expression for a calculated metric, for example `[Spend]/[Clicks]`),
+  **Format** (a number-format hint: `currency`, `percent`, `number`), then the
+  per-dimension **Show in views**, **Break-out table** and **Mapping**
+  checkboxes. Only dimensions with Show checked become filter dropdowns; an
   unchecked dimension stays in the data but is hidden (metrics aggregate over
   all its values). A dimension with Break-out checked gets its own totals-per-
   value table on every view; the two toggles are independent. Raw fields must
   match a data_source header exactly; calculated fields need not. Metrics and
   dimensions render in Setup row order, so a calculated metric placed between
-  two raw ones appears between them. Row 1 is a header and is skipped.
+  two raw ones appears between them. Row 1 is the header row, and the columns
+  are resolved by reading it rather than by position, so they may be reordered
+  and the optional ones left out; **Field** and **Type** must be named, or the
+  run stops with an error pointing at row 1.
+- **Display name** is optional and presentation only: it is the label the views
+  render a field under - table headers, slicer labels, break-out titles, the
+  Comparison metric picker - while the **Field** name stays the identity
+  everything binds to (the data_source header, the named range, the `[Field]`
+  token, the mapping column). Leave it blank to use the Field name. Each field's
+  label must be unique, since the Comparison metric picker selects by label.
 - **data_source** (input) is the raw data. Row 1 is headers, row 2+ is data.
 - **mapping** (generated) has one column per dimension that is shown or broken
   out: row 1 the dimension name, row 2 the `**` sentinel (meaning "All"), row

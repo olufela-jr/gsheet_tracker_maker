@@ -14,6 +14,20 @@ from tracker import (
 )
 
 
+# A Setup header row with the optional Display name column left out, and the
+# full one. Most fixtures below use the former, so they also cover a tracker
+# that simply never labels its fields.
+SETUP_HEADER_NO_DISPLAY = [
+    "Field", "Type", "Formula", "Format", "Show in views",
+    "Break-out table", "Mapping",
+]
+
+SETUP_HEADER = [
+    "Field", "Display name", "Type", "Formula", "Format", "Show in views",
+    "Break-out table", "Mapping",
+]
+
+
 class FakeClient:
     """A fake covering the client surface build_view touches.
 
@@ -21,8 +35,10 @@ class FakeClient:
     optionally Mapping rows; records batch writes and updates for assertions.
     """
 
-    def __init__(self, setup_rows, headers, date_serials, tabs, mapping_rows=None):
-        self._setup = setup_rows
+    def __init__(self, setup_rows, headers, date_serials, tabs, mapping_rows=None,
+                 setup_header=None):
+        # Row 1 of Setup is the header row read_setup resolves columns from.
+        self._setup = [setup_header or SETUP_HEADER_NO_DISPLAY] + list(setup_rows)
         self._headers = headers
         self._date_serials = date_serials
         self._tabs = dict(tabs)  # title -> sheetId
@@ -435,6 +451,93 @@ class TestComparison:
         assert len(added) == 1
         chart = added[0]["addChart"]["chart"]["spec"]["basicChart"]
         assert len(chart["series"]) == 2  # Side A and Side B
+
+
+class TestDisplayNames:
+    """Setup's Display name column relabels the dashboards, nothing else."""
+
+    def _client(self, tab):
+        setup = [
+            ["Day", "", "date", "", "", "", "", ""],
+            ["Region", "Market Region", "dimension", "", "", "TRUE", "TRUE", ""],
+            ["Spend", "Media Spend", "metric", "", "currency", "", "", ""],
+            ["Clicks", "", "metric", "", "number", "", "", ""],
+            ["CPC", "Cost per Click", "calculated", "[Spend]/[Clicks]",
+             "currency", "", "", ""],
+        ]
+        return FakeClient(
+            setup,
+            ["Day", "Region", "Spend", "Clicks"],
+            [date_to_serial(date(2025, 8, 4))],
+            {"setup": 1, "data_source": 2, tab: 3},
+            mapping_rows=[["Region"], ["**"], ["North"], ["South"]],
+            setup_header=SETUP_HEADER,
+        )
+
+    def test_view_blocks_render_the_display_names(self):
+        client = self._client(DEFAULT_CONFIG.weekly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        labels = ["Media Spend", "Clicks", "Cost per Click"]
+        # A metric with no display name keeps its field name (Clicks).
+        assert client._has_raw([["Totals"] + labels])
+        assert client._has_raw([["Period"] + labels])
+        assert client._has_raw([["From", "To"] + labels])
+        # The slicer label and the break-out table's title and header row.
+        assert client._has_raw([["Market Region", DEFAULT_CONFIG.sentinel]])
+        assert client._has_raw([["By Market Region"]])
+        assert client._has_raw([["Market Region"] + labels])
+
+    def test_formulas_still_bind_to_the_field_names(self):
+        # Relabelling must not re-point anything: the SUMIFS still reference
+        # the Spend / Region named ranges, which come from the Field column.
+        client = self._client(DEFAULT_CONFIG.weekly_tab)
+        result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert result["metrics"] == ["Spend", "Clicks", "CPC"]
+        assert result["dimensions"] == ["Region"]
+        formulas = str(client.formula_writes)
+        assert "SUMIFS(Spend, Region," in formulas
+        assert "Media Spend" not in formulas
+        assert "Market Region" not in formulas
+
+    def test_breakout_values_still_come_from_the_mapping_column(self):
+        # Mapping is keyed by field name, so a relabelled dimension must still
+        # find its values.
+        client = self._client(DEFAULT_CONFIG.weekly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert client._has_raw([["North"], ["South"]])
+
+    def test_comparison_picker_and_table_use_the_display_names(self):
+        client = self._client(DEFAULT_CONFIG.comparison_tab)
+        build_comparison(client, DEFAULT_CONFIG)
+        assert client._has_raw([["Media Spend"], ["Clicks"], ["Cost per Click"]])
+        assert client._has_raw([["Market Region", DEFAULT_CONFIG.sentinel]])
+        # The picker cell defaults to the first metric's label...
+        controls = [w["values"][0] for w in client.raw_writes
+                    if w["values"] and w["values"][0][0] == "Metric to chart"]
+        assert controls and controls[0][1] == "Media Spend"
+        # ...its dropdown offers the labels...
+        lists = [
+            v["rule"]["condition"]["values"] for batch in client.batch_updates
+            for r in batch if "setDataValidation" in r
+            for v in [r["setDataValidation"]]
+            # The tab-wide clear is a setDataValidation with no rule at all.
+            if v.get("rule", {}).get("condition", {}).get("type") == "ONE_OF_LIST"
+        ]
+        metric_list = [
+            [x["userEnteredValue"] for x in vals] for vals in lists
+            if "Media Spend" in [x["userEnteredValue"] for x in vals]
+        ]
+        assert metric_list == [["Media Spend", "Clicks", "Cost per Click"]]
+        # ...and the array its MATCH searches carries the same labels, so the
+        # picked one selects the right metric's expression.
+        helper = [
+            w for w in client.formula_writes
+            if any("CHOOSE(MATCH(" in str(cell) for row in w["values"] for cell in row)
+        ]
+        assert helper
+        cell = [c for row in helper[0]["values"] for c in row
+                if "CHOOSE(MATCH(" in str(c)][0]
+        assert '{"Media Spend";"Clicks";"Cost per Click"}' in cell
 
 
 class TestUnvalidatedFormula:

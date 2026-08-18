@@ -352,33 +352,53 @@ def _note(sheet_id, row, col, text):
 def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
     """Format the two input tabs, mirroring the old Apps Script setupTemplate.
 
-    setup: a dark banner header on Field/Type, frozen first row, sensible column
-    widths, and hover notes. data_source: a frozen header and a hover note. Pure
-    function; the service applies these on scaffold so the look stays in code.
+    setup: a dark banner header across the schema columns, frozen first row,
+    sensible column widths, and hover notes. data_source: a frozen header and a
+    hover note. Pure function; the service applies these on scaffold so the look
+    stays in code.
+
+    The 0-based column numbers below are the layout scaffold seeds — Field,
+    Display name, Type, Formula, Format, Show in views, Break-out table,
+    Mapping (tracker.fields.SETUP_HEADERS). They are only the formatting; the
+    reader resolves columns by header text, so an older tracker without the
+    Display name column still parses.
     """
     requests = []
 
     if setup_sheet_id is not None:
+        c_name, c_display, c_type, c_formula = 0, 1, 2, 3
+        c_show, c_mapping = 5, 7
         requests.append(
             _format(
-                setup_sheet_id, 0, 1, 0, 7,
+                setup_sheet_id, 0, 1, 0, c_mapping + 1,
                 {"backgroundColor": BANNER_BG, "textFormat": _text(10, BANNER_TEXT, bold=True)},
                 "userEnteredFormat(backgroundColor,textFormat)",
             )
         )
         requests.append(_freeze_header(setup_sheet_id))
-        requests.append(_col_width(setup_sheet_id, 0, 1, 220))
-        requests.append(_col_width(setup_sheet_id, 1, 2, 120))
-        requests.append(_col_width(setup_sheet_id, 4, 7, 120))
+        # Field and Display name both hold names, so give them equal room.
+        requests.append(_col_width(setup_sheet_id, c_name, c_display + 1, 220))
+        requests.append(_col_width(setup_sheet_id, c_type, c_type + 1, 120))
+        requests.append(_col_width(setup_sheet_id, c_show, c_mapping + 1, 120))
         requests.append(
-            _note(setup_sheet_id, 0, 0, "Field must exactly match a header in data_source.")
+            _note(setup_sheet_id, 0, c_name,
+                  "Field must exactly match a header in data_source.")
+        )
+        requests.append(
+            _note(
+                setup_sheet_id, 0, c_display,
+                "Optional: the name this field is shown under in the views — "
+                "table headers, slicer labels, break-out titles. Leave blank "
+                "to use the Field name. Renaming here changes nothing that the "
+                "formulas bind to, but each display name must be unique.",
+            )
         )
         requests.append(_note(
-            setup_sheet_id, 0, 1,
+            setup_sheet_id, 0, c_type,
             'Type is "metric", "dimension", "date", or "calculated".'))
         requests.append(
             _note(
-                setup_sheet_id, 0, 2,
+                setup_sheet_id, 0, c_formula,
                 "Calculated fields only: the expression, with each metric "
                 "named in brackets, e.g. [Spend]/[Clicks]. No leading '=', "
                 "and the names must match the Field column exactly.",
@@ -389,28 +409,28 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         # rejects the bracket syntax with a parse error, so force plain text.
         requests.append(
             _format(
-                setup_sheet_id, 1, 1000, 2, 3,
+                setup_sheet_id, 1, 1000, c_formula, c_formula + 1,
                 {"numberFormat": {"type": "TEXT"}},
                 "userEnteredFormat.numberFormat",
             )
         )
         requests.append(
             _note(
-                setup_sheet_id, 0, 4,
+                setup_sheet_id, 0, c_show,
                 "Dimensions only: check to show this dimension as a filter in "
                 "the daily/weekly/monthly views. Blank = hidden from the views.",
             )
         )
         requests.append(
             _note(
-                setup_sheet_id, 0, 5,
+                setup_sheet_id, 0, c_show + 1,
                 "Dimensions only: check to add a break-out table (totals per "
                 "value of this dimension) to every view. Independent of Show.",
             )
         )
         requests.append(
             _note(
-                setup_sheet_id, 0, 6,
+                setup_sheet_id, 0, c_mapping,
                 "Dimensions only: check to list this dimension's values in "
                 "the mapping tab. Show / Break-out imply it; leave all three "
                 "blank to keep a high-cardinality dimension out of Mapping.",
@@ -421,7 +441,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(
             {
                 "setDataValidation": {
-                    "range": _grid(setup_sheet_id, 1, 1000, 4, 7),
+                    "range": _grid(setup_sheet_id, 1, 1000, c_show, c_mapping + 1),
                     "rule": {
                         "condition": {"type": "BOOLEAN"},
                         "showCustomUi": True,
@@ -435,7 +455,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(
             {
                 "setDataValidation": {
-                    "range": _grid(setup_sheet_id, 1, 1000, 1, 2),
+                    "range": _grid(setup_sheet_id, 1, 1000, c_type, c_type + 1),
                     "rule": {
                         "condition": {
                             "type": "ONE_OF_LIST",

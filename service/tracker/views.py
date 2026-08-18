@@ -25,6 +25,11 @@ build_view orchestrates; each block is laid out by its own _add_* function
 that appends writes and formats to a shared Page. Positions come from the
 Page's running row cursor, so blocks that vary in height (period windows,
 dimension values) stack cleanly.
+
+Every label a block writes — slicer names, metric column headers, break-out
+titles — comes from label_of, so Setup's Display name column decides what the
+reader sees. The formulas underneath keep using the Field name, which is what
+the named ranges and [Field] tokens bind to.
 """
 
 from collections import namedtuple
@@ -48,6 +53,8 @@ from .fields import (
     date_field_of,
     dimensions_of,
     is_calculated,
+    label_of,
+    labels_of,
     mapping_dimensions_of,
     metric_fields_of,
     read_data_source_headers,
@@ -79,6 +86,11 @@ from .scaffold import ensure_tab
 MAX_BREAKOUT_VALUES = 50
 
 # Everything the block builders need about one view, resolved once.
+#   metric_names:  Setup field names — identity: named ranges, [Field] tokens
+#   metric_labels: the same metrics as the dashboard renders them (Display
+#                  name, falling back to the field name); headers only
+#   labels:        {field name: dashboard label} for the dimensions, which
+#                  reach the builders as bare names
 #   metrics_meta:  (is_calculated, number_format_pattern) per metric
 #   num_periods:   rows in the period matrix (the PERIOD_ROWS window)
 #   has_compare:   the From/To compare table; weekly and monthly only
@@ -89,8 +101,8 @@ _View = namedtuple(
     [
         "cfg", "tab", "granularity", "sentinel", "date_range",
         "dates_src", "years_src",
-        "metric_fields", "metric_names", "metrics_meta",
-        "dimensions", "breakouts", "mapping_dims", "breakout_values",
+        "metric_fields", "metric_names", "metric_labels", "metrics_meta",
+        "dimensions", "breakouts", "mapping_dims", "breakout_values", "labels",
         "num_periods", "has_metrics", "has_compare",
         "date_pattern", "kpi_last_col", "end_col",
     ],
@@ -151,12 +163,14 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers,
         years_src=years_src,
         metric_fields=metric_fields,
         metric_names=[m.name for m in metric_fields],
+        metric_labels=[label_of(m) for m in metric_fields],
         metrics_meta=[(is_calculated(m), number_format_pattern(m.fmt))
                       for m in metric_fields],
         dimensions=dimensions,
         breakouts=breakouts,
         mapping_dims=mapping_dims,
         breakout_values=breakout_values or {},
+        labels=labels_of(fields),
         num_periods=PERIOD_ROWS[granularity],
         has_metrics=has_metrics,
         has_compare=has_compare,
@@ -256,7 +270,7 @@ def _add_filter_header(page, v):
         row_dims = v.dimensions[gr * PAIRS_PER_ROW:(gr + 1) * PAIRS_PER_ROW]
         line = []
         for dim in row_dims:
-            line.extend([dim, v.sentinel])
+            line.extend([v.labels[dim], v.sentinel])
         page.write("A{}".format(grid_first + gr), [line])
     for r0, c0 in drop_positions:
         page.fmt.append(theme.header_row(page.sheet_id, r0, c0 - 1, c0))
@@ -308,7 +322,7 @@ def _add_kpi_strip(page, v, dim_specs):
         return
     label_row = page.row
     value_row = page.row + 1
-    page.write("A{}".format(label_row), [["Totals"] + v.metric_names])
+    page.write("A{}".format(label_row), [["Totals"] + v.metric_labels])
     cell_of = _metric_cell_of(v, 2, value_row)
     page.write_formulas(
         "B{}".format(value_row),
@@ -343,7 +357,7 @@ def _add_compare_block(page, v, dim_specs):
     a_row = page.row + 1
     b_row = page.row + 2
     diff_row = page.row + 3
-    page.write("A{}".format(header_row), [["From", "To"] + v.metric_names])
+    page.write("A{}".format(header_row), [["From", "To"] + v.metric_labels])
 
     def totals(row):
         lower = '">="&$A{}'.format(row)
@@ -410,7 +424,7 @@ def _add_period_matrix(page, v, dim_specs):
     header_row = page.row + 1
     first_data = page.row + 2
     page.write("A{}".format(title_row), [["By {}".format(v.granularity)]])
-    page.write("A{}".format(header_row), [["Period"] + v.metric_names])
+    page.write("A{}".format(header_row), [["Period"] + v.metric_labels])
 
     periods = [[period_start_formula(v.granularity)]]
     for j in range(1, v.num_periods):
@@ -466,14 +480,14 @@ def _add_breakout_tables(page, v, dim_specs, pickers):
         truncated = len(all_vals) > MAX_BREAKOUT_VALUES
         bd_range = sanitise_name(bd)
         other_specs = [spec for dim, spec in zip(v.dimensions, dim_specs) if dim != bd]
-        title = "By {}".format(bd)
+        title = "By {}".format(v.labels[bd])
         if truncated:
             title += "  (first {} of {})".format(MAX_BREAKOUT_VALUES, len(all_vals))
         title_row = page.row
         header_row = page.row + 1
         first_data = page.row + 2
         page.write("A{}".format(title_row), [[title]])
-        page.write("A{}".format(header_row), [[bd] + v.metric_names])
+        page.write("A{}".format(header_row), [[v.labels[bd]] + v.metric_labels])
         if vals:
             page.write("A{}".format(first_data), [[val] for val in vals])
             block = []

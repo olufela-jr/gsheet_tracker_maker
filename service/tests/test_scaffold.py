@@ -87,8 +87,8 @@ class TestScaffold:
         new = FakeSheet({"Sheet1": 0})
         scaffold(new, DEFAULT_CONFIG)
         assert any(
-            v == [["Field", "Type", "Formula", "Format", "Show in views",
-                   "Break-out table", "Mapping"]]
+            v == [["Field", "Display name", "Type", "Formula", "Format",
+                   "Show in views", "Break-out table", "Mapping"]]
             for _, v, _ in new.writes
         )
 

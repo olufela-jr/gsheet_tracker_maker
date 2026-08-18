@@ -83,9 +83,9 @@ class TestInputTabFormat:
         ]
         assert len(dropdowns) == 1
         rule = dropdowns[0]
-        # Column B (index 1), below the header row.
-        assert rule["range"]["startColumnIndex"] == 1
-        assert rule["range"]["endColumnIndex"] == 2
+        # Column C (index 2), below the header row.
+        assert rule["range"]["startColumnIndex"] == 2
+        assert rule["range"]["endColumnIndex"] == 3
         assert rule["range"]["startRowIndex"] == 1
         values = [v["userEnteredValue"] for v in rule["rule"]["condition"]["values"]]
         assert values == ["metric", "dimension", "date", "calculated"]
@@ -98,8 +98,8 @@ class TestInputTabFormat:
             if v["rule"]["condition"]["type"] == "BOOLEAN"
         ]
         assert len(checkboxes) == 1
-        assert checkboxes[0]["range"]["startColumnIndex"] == 4
-        assert checkboxes[0]["range"]["endColumnIndex"] == 7
+        assert checkboxes[0]["range"]["startColumnIndex"] == 5
+        assert checkboxes[0]["range"]["endColumnIndex"] == 8
 
     def test_no_setup_requests_when_setup_not_created(self):
         requests = theme.input_tab_format_requests(None, None)
@@ -121,8 +121,8 @@ class TestFormulaColumn:
         ]
         assert len(text_fmts) == 1
         rng = text_fmts[0]["range"]
-        assert rng["startColumnIndex"] == 2  # column C
-        assert rng["endColumnIndex"] == 3
+        assert rng["startColumnIndex"] == 3  # column D
+        assert rng["endColumnIndex"] == 4
         assert rng["startRowIndex"] == 1     # below the header
 
     def test_formula_column_has_a_hover_note(self):
@@ -130,8 +130,8 @@ class TestFormulaColumn:
             r["updateCells"] for r in self._setup_requests()
             if "updateCells" in r
         ]
-        col_c = [n for n in notes if n["range"]["startColumnIndex"] == 2]
-        assert len(col_c) == 1
-        text = col_c[0]["rows"][0]["values"][0]["note"]
+        col_d = [n for n in notes if n["range"]["startColumnIndex"] == 3]
+        assert len(col_d) == 1
+        text = col_d[0]["rows"][0]["values"][0]["note"]
         assert "No leading '='" in text
         assert "[Spend]/[Clicks]" in text
