@@ -229,7 +229,9 @@ gcloud run services add-iam-policy-binding tracker-service --region REGION \
 ```
 
 Set who may use it in `deploy/vars.sh` (`ALLOWED_EMAILS` / `ALLOWED_DOMAIN`,
-`ADMIN_EMAILS`) and redeploy. Then **Tracker Admin > New tracker** creates a
+`ADMIN_EMAILS`) and redeploy. `ADMIN_EMAILS` widens which trackers someone may
+act on, it does not admit them: an admin must also be on `ALLOWED_EMAILS` or in
+`ALLOWED_DOMAIN`. Then **Tracker Admin > New tracker** creates a
 clean tracker; fill its `setup` + `data_source` and **Operate on tracker** to
 build it. Full runbook in [SETUP.txt](SETUP.txt).
 

@@ -30,6 +30,7 @@ def verify_caller(token):
         raise AuthError("Missing identity token", 401)
     # Imported lazily so the module loads (and unit tests run) without the
     # google auth transport and its requests dependency.
+    from google.auth.exceptions import TransportError
     from google.auth.transport import requests as ga_requests
     from google.oauth2 import id_token
 
@@ -37,6 +38,11 @@ def verify_caller(token):
         claims = id_token.verify_oauth2_token(
             token, ga_requests.Request(), audience=None, clock_skew_in_seconds=10
         )
+    except TransportError as exc:
+        # Verification fetches Google's signing certs over HTTP. If that fetch
+        # fails the token is not bad, we just could not check it: say so with a
+        # 503 so the caller retries instead of seeing "your login is invalid".
+        raise AuthError("Cannot verify identity right now: {}".format(exc), 503)
     except Exception as exc:  # noqa: BLE001 - any verification failure is a 401
         raise AuthError("Invalid identity token: {}".format(exc), 401)
     email = (claims.get("email") or "").lower()
@@ -53,7 +59,9 @@ def is_allowed(email, cfg):
     """True if the email is on the allowlist or in the allowed domain."""
     if email in _emails(cfg.allowed_emails):
         return True
-    domain = (cfg.allowed_domain or "").strip().lower()
+    # lstrip("@") so ALLOWED_DOMAIN="@x.com" means the same as "x.com"; written
+    # with the "@" it would otherwise match nothing and lock everyone out.
+    domain = (cfg.allowed_domain or "").strip().lower().lstrip("@")
     return bool(domain) and email.endswith("@" + domain)
 
 
@@ -73,6 +81,11 @@ def check_rate_limit(email, limit_per_min):
         return
     window = int(time.time() // 60)
     with _rate_lock:
+        # Drop everyone whose window has rolled over. Without this the dict keeps
+        # an entry per caller for the life of the instance; the allowlist bounds
+        # how many that is, but with ALLOWED_DOMAIN set that bound is the domain.
+        for stale in [e for e, b in _rate_buckets.items() if b[0] != window]:
+            del _rate_buckets[stale]
         bucket = _rate_buckets.get(email)
         if not bucket or bucket[0] != window:
             bucket = [window, 0]
