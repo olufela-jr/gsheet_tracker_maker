@@ -373,6 +373,128 @@ class TestBuildView:
         assert 'Day, "<"&IF($D$3="",9.9E+307,$D$3+1)' in cell
 
 
+class TestPartialBreakout:
+    """A partial break-out: fixed rows the user picks values into."""
+
+    def _built(self):
+        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="partial")
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        return client
+
+    def _dropdowns(self, client):
+        return [
+            r["setDataValidation"] for batch in client.batch_updates
+            for r in batch
+            if "setDataValidation" in r
+            and r["setDataValidation"].get("rule", {}).get(
+                "condition", {}).get("type") == "ONE_OF_RANGE"
+        ]
+
+    def _block(self, client):
+        """The break-out's formula write: 30 rows starting in column B."""
+        writes = [
+            w for w in client.formula_writes
+            if w["range"].split("!")[-1].startswith("B")
+            and len(w["values"]) == 30
+        ]
+        assert len(writes) == 1
+        return writes[0]
+
+    def test_the_title_says_how_many_rows_there_are_to_pick(self):
+        assert self._built()._has_raw([["By Region  (pick up to 30)"]])
+
+    def test_the_label_column_is_left_empty(self):
+        client = self._built()
+        # The header still names the dimension, but the rows below it are the
+        # user's to fill: nothing is auto-populated from Mapping.
+        assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
+        assert not client._has_raw([["North"], ["South"]])
+
+    def _picker(self, client):
+        """The break-out's label-column dropdown, the only 30-row-tall one.
+
+        Column A also carries the compare block's From cells, so height is
+        what identifies this rule, not position.
+        """
+        rules = [
+            d for d in self._dropdowns(client)
+            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
+        ]
+        assert len(rules) == 1
+        return rules[0]
+
+    def test_every_row_is_blank_guarded_so_unpicked_rows_stay_empty(self):
+        block = self._block(self._built())
+        rows = block["values"]
+        assert block["range"].endswith("B26")
+        assert len(rows) == 30
+        # A raw metric: guarded, then the usual date-scoped SUMIFS.
+        spend = rows[0][0]
+        assert spend.startswith('=IF(A26="","",SUMIFS(Spend, Region, A26,')
+        assert 'Day, ">="&IF($B$3="",0,$B$3)' in spend
+        # A calculated metric guards the same way around its sibling refs.
+        assert rows[0][2] == '=IF(A26="","",IFERROR(B26/C26, ""))'
+        # The last row is 29 below the first, and still guarded on its own cell.
+        assert rows[29][0].startswith('=IF(A55="","",SUMIFS(Spend, Region, A55,')
+
+    def test_the_label_column_gets_one_dropdown_covering_all_thirty_rows(self):
+        rng = self._picker(self._built())["range"]
+        assert rng["startColumnIndex"] == 0
+        assert rng["endColumnIndex"] == 1
+        # Row 26 in A1 terms is index 25, and it runs 30 rows from there.
+        assert rng["startRowIndex"] == 25
+        assert rng["endRowIndex"] == 55
+
+    def test_the_picker_list_skips_the_all_sentinel(self):
+        picker = self._picker(self._built())
+        source = picker["rule"]["condition"]["values"][0]["userEnteredValue"]
+        # Mapping row 2 is "**" (meaning "All"); as a row label it would total
+        # every row rather than one value, so the list starts at row 3.
+        assert source == "='mapping'!A3:A"
+
+    def test_total_and_partial_blocks_stack_in_setup_order(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "total"],
+            ["Campaign", "dimension", "", "", "", "partial"],
+            ["Spend", "metric", "", "currency", "", ""],
+        ]
+        mapping = [
+            ["Region", "Campaign"],
+            ["**", "**"],
+            ["North", "Alpha"],
+            ["South", "Beta"],
+        ]
+        client = FakeClient(
+            setup,
+            ["Day", "Region", "Campaign", "Spend"],
+            [date_to_serial(date(2025, 8, 4))],
+            {"setup": 1, "data_source": 2, DEFAULT_CONFIG.weekly_tab: 3},
+            mapping_rows=mapping,
+        )
+        result = build_view(
+            client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert result["breakouts"] == ["Region", "Campaign"]
+        # The total block lists its Mapping values; the partial one names how
+        # many rows there are to pick and leaves them blank.
+        assert client._has_raw([["By Region"]])
+        assert client._has_raw([["North"], ["South"]])
+        assert client._has_raw([["By Campaign  (pick up to 30)"]])
+        assert not client._has_raw([["Alpha"], ["Beta"]])
+        # Only the partial block gets a picker, sourced from Campaign's
+        # Mapping column (B, the second mapping dimension).
+        pickers = [
+            d for d in self._dropdowns(client)
+            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
+        ]
+        assert len(pickers) == 1
+        assert (pickers[0]["rule"]["condition"]["values"][0]["userEnteredValue"]
+                == "='mapping'!B3:B")
+        # Campaign is below Region, so its rows start after the total block's
+        # two values plus the title, header and the two-row gap.
+        assert pickers[0]["range"]["startRowIndex"] > 25
+
+
 class TestBuildViews:
     def _client_all_tabs(self):
         c = _client(DEFAULT_CONFIG.daily_tab)

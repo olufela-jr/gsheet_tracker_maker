@@ -21,6 +21,7 @@ from tracker import (
     build_calc_formula,
     build_sumifs_formula,
     breakout_dimensions_of,
+    breakout_modes_of,
     date_field_of,
     date_to_serial,
     dimensions_of,
@@ -502,7 +503,7 @@ class TestDisplayName:
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
         by_name = {f.name: f for f in fields}
         assert by_name["Region"].type == "dimension"
-        assert by_name["Region"].breakout is True
+        assert by_name["Region"].breakout == "total"
         assert by_name["Spend"].fmt == "currency"
         assert all(f.display == "" for f in fields)
         assert labels_of(fields) == {
@@ -612,9 +613,56 @@ class TestBreakoutColumn:
         ]
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
         by_name = {f.name: f for f in fields}
-        assert by_name["Region"].breakout is True
-        assert by_name["Channel"].breakout is False
-        assert by_name["Market"].breakout is True
+        # A checkbox predates the total/partial dropdown, so its TRUE reads as
+        # a total break-out — the shape those trackers already render.
+        assert by_name["Region"].breakout == "total"
+        assert by_name["Channel"].breakout == ""
+        assert by_name["Market"].breakout == "total"
+
+    @pytest.mark.parametrize(
+        "cell,expected",
+        [
+            ("total", "total"),
+            ("partial", "partial"),
+            # The dropdown is lower case, but a hand-typed cell need not be.
+            ("Total", "total"),
+            ("PARTIAL", "partial"),
+            ("  partial  ", "partial"),
+            # A tracker built before the column became a dropdown carries a
+            # checkbox, whose TRUE means the break-out it already renders.
+            ("TRUE", "total"),
+            ("x", "total"),
+            # Off, in every spelling a checkbox or a person produces.
+            ("", ""),
+            ("FALSE", ""),
+            ("no", ""),
+            # Anything else errs towards showing the table rather than
+            # silently dropping one the user asked for.
+            ("top 30", "total"),
+        ],
+    )
+    def test_breakout_cell_reads_as_a_mode(self, cell, expected):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", cell],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        assert {f.name: f for f in fields}["Region"].breakout == expected
+
+    def test_breakout_modes_of_keys_match_breakout_dimensions_of(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "total"],
+            ["Campaign", "dimension", "", "", "", "partial"],
+            ["Channel", "dimension", "", "", "TRUE", ""],
+            ["Spend", "metric", "", "currency", "", "total"],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        # A mode on a metric is meaningless and is ignored, and the two
+        # selectors must agree or a block would render with no mode.
+        assert breakout_dimensions_of(fields) == ["Region", "Campaign"]
+        assert breakout_modes_of(fields) == {
+            "Region": "total", "Campaign": "partial"}
 
     def test_breakout_is_independent_of_show(self):
         # Market is broken out but not shown; Channel is shown but not broken out.

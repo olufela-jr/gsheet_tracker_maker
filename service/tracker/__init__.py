@@ -20,10 +20,14 @@ Everything public is re-exported here, so `import tracker` and
 from .audit import TRACKER_FIELDS, build_tracker_record, log_tracker
 from .comparison import COMPARISON_PERIODS, build_comparison
 from .fields import (
+    BREAKOUT_MODES,
+    BREAKOUT_PARTIAL,
+    BREAKOUT_TOTAL,
     Field,
     SETUP_HEADERS,
     ValidationError,
     breakout_dimensions_of,
+    breakout_modes_of,
     date_field_of,
     dimensions_of,
     is_calculated,
@@ -71,7 +75,13 @@ from .scaffold import (
     require_input_tabs,
     scaffold,
 )
-from .views import MAX_BREAKOUT_VALUES, build_view, build_views, view_specs
+from .views import (
+    BREAKOUT_PARTIAL_ROWS,
+    MAX_BREAKOUT_VALUES,
+    build_view,
+    build_views,
+    view_specs,
+)
 
 
 def run_all(client, cfg):

@@ -49,12 +49,13 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   name), **Display name**, **Type** (`metric`, `dimension`, `date` - tag
   exactly one field `date` - or `calculated`), **Formula** (a `[Field]`-token
   expression for a calculated metric, for example `[Spend]/[Clicks]`),
-  **Format** (a number-format hint: `currency`, `percent`, `number`), then the
-  per-dimension **Show in views**, **Break-out table** and **Mapping**
-  checkboxes. Only dimensions with Show checked become filter dropdowns; an
-  unchecked dimension stays in the data but is hidden (metrics aggregate over
-  all its values). A dimension with Break-out checked gets its own totals-per-
-  value table on every view; the two toggles are independent. Raw fields must
+  **Format** (a number-format hint: `currency`, `percent`, `number`), the
+  per-dimension **Show in views** checkbox, the per-dimension **Break-out
+  table** mode (`total`, `partial`, or blank), and the per-dimension
+  **Mapping** checkbox. Only dimensions with Show checked become filter
+  dropdowns; an unchecked dimension stays in the data but is hidden (metrics
+  aggregate over all its values). A dimension with a break-out mode gets its
+  own block on every view; Show and Break-out are independent. Raw fields must
   match a data_source header exactly; calculated fields need not. Metrics and
   dimensions render in Setup row order, so a calculated metric placed between
   two raw ones appears between them. Row 1 is the header row, and the columns
@@ -78,9 +79,16 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   columns tinted periwinkle). Weekly and monthly also carry a **compare block**
   (two period pickers showing each metric's A, B, and % change) and a **% change
   column** beside each metric in the matrix. Below that, each dimension flagged
-  for break-out gets a **totals-per-value table** (capped at 50 values, with the
-  cap shown in the title). The monthly view also carries a line chart of every
-  metric over time.
+  for break-out gets a **break-out block**, in one of two shapes. A `total`
+  break-out lists a row per value of the dimension, capped at 50 with the cap
+  shown in the title - note the cap takes the *first* 50 in mapping's
+  alphabetical order, not the top 50 by any metric. A `partial` break-out is 30
+  rows whose labels are blank cells carrying a dropdown of that dimension's
+  values (the `**` sentinel excluded): the reader picks which values the block
+  covers, and a row stays empty until they do. Use it for a dimension whose
+  interesting values are not the alphabetically first ones - campaigns, mostly.
+  The picks are not preserved across a rebuild; a refresh blanks them. The
+  monthly view also carries a line chart of every metric over time.
 - **comparison** (generated) is a split-screen A/B tab. Each side has a dropdown
   per shown dimension and its own Date from / Date to, so you can compare two
   campaigns (or channels, regions, ...) over the same or different ranges. A

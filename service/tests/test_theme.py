@@ -76,15 +76,19 @@ class TestInputTabFormat:
         requests = theme.input_tab_format_requests(7, None)
         return [r["setDataValidation"] for r in requests if "setDataValidation" in r]
 
-    def test_type_column_gets_a_dropdown_of_the_field_types(self):
-        dropdowns = [
+    def _dropdown_on(self, col):
+        """The single ONE_OF_LIST rule covering column `col`."""
+        rules = [
             v for v in self._setup_validations()
             if v["rule"]["condition"]["type"] == "ONE_OF_LIST"
+            and v["range"]["startColumnIndex"] == col
         ]
-        assert len(dropdowns) == 1
-        rule = dropdowns[0]
+        assert len(rules) == 1
+        return rules[0]
+
+    def test_type_column_gets_a_dropdown_of_the_field_types(self):
         # Column C (index 2), below the header row.
-        assert rule["range"]["startColumnIndex"] == 2
+        rule = self._dropdown_on(2)
         assert rule["range"]["endColumnIndex"] == 3
         assert rule["range"]["startRowIndex"] == 1
         values = [v["userEnteredValue"] for v in rule["rule"]["condition"]["values"]]
@@ -92,14 +96,29 @@ class TestInputTabFormat:
         # Strict: only the listed types are accepted at entry.
         assert rule["rule"]["strict"] is True
 
+    def test_breakout_column_gets_a_dropdown_of_the_modes(self):
+        # Column G (index 6): a mode, not a toggle, so a dropdown rather than
+        # the checkbox its neighbours carry.
+        rule = self._dropdown_on(6)
+        assert rule["range"]["endColumnIndex"] == 7
+        assert rule["range"]["startRowIndex"] == 1
+        values = [v["userEnteredValue"] for v in rule["rule"]["condition"]["values"]]
+        assert values == ["total", "partial"]
+        assert rule["rule"]["strict"] is True
+
     def test_toggle_columns_keep_their_checkboxes(self):
+        # Show (F) and Mapping (H) stay checkboxes, and the Break-out column
+        # between them is deliberately not covered by either rule — a BOOLEAN
+        # rule there would reject "total" / "partial".
         checkboxes = [
             v for v in self._setup_validations()
             if v["rule"]["condition"]["type"] == "BOOLEAN"
         ]
-        assert len(checkboxes) == 1
-        assert checkboxes[0]["range"]["startColumnIndex"] == 5
-        assert checkboxes[0]["range"]["endColumnIndex"] == 8
+        spans = sorted(
+            (c["range"]["startColumnIndex"], c["range"]["endColumnIndex"])
+            for c in checkboxes
+        )
+        assert spans == [(5, 6), (7, 8)]
 
     def test_no_setup_requests_when_setup_not_created(self):
         requests = theme.input_tab_format_requests(None, None)

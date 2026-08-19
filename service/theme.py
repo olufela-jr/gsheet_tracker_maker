@@ -47,6 +47,10 @@ FONT = "Arial"
 # here (not imported from tracker.fields) to avoid a circular import.
 FIELD_TYPES = ("metric", "dimension", "date", "calculated")
 
+# The setup tab's valid Break-out values, offered as a dropdown on scaffold.
+# Kept here for the same reason as FIELD_TYPES (no circular import).
+BREAKOUT_MODES = ("total", "partial")
+
 
 # --- low level request builders -------------------------------------------
 
@@ -367,7 +371,7 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
 
     if setup_sheet_id is not None:
         c_name, c_display, c_type, c_formula = 0, 1, 2, 3
-        c_show, c_mapping = 5, 7
+        c_show, c_breakout, c_mapping = 5, 6, 7
         requests.append(
             _format(
                 setup_sheet_id, 0, 1, 0, c_mapping + 1,
@@ -423,9 +427,12 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         )
         requests.append(
             _note(
-                setup_sheet_id, 0, c_show + 1,
-                "Dimensions only: check to add a break-out table (totals per "
-                "value of this dimension) to every view. Independent of Show.",
+                setup_sheet_id, 0, c_breakout,
+                'Dimensions only: "total" adds a break-out table with a row '
+                'per value of this dimension; "partial" adds one with a fixed '
+                'set of rows you pick values into from a dropdown, for a '
+                'dimension with too many values to list. Blank = no break-out '
+                'table. Independent of Show.',
             )
         )
         requests.append(
@@ -436,20 +443,22 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                 "blank to keep a high-cardinality dimension out of Mapping.",
             )
         )
-        # Checkboxes down the Show, Break-out and Mapping columns so the
-        # toggles are obvious.
-        requests.append(
-            {
-                "setDataValidation": {
-                    "range": _grid(setup_sheet_id, 1, 1000, c_show, c_mapping + 1),
-                    "rule": {
-                        "condition": {"type": "BOOLEAN"},
-                        "showCustomUi": True,
-                        "strict": False,
-                    },
+        # Checkboxes down the Show and Mapping columns so the toggles are
+        # obvious. Break-out sits between them but is a mode, not a toggle, so
+        # it takes a dropdown of its own below rather than a checkbox.
+        for col in (c_show, c_mapping):
+            requests.append(
+                {
+                    "setDataValidation": {
+                        "range": _grid(setup_sheet_id, 1, 1000, col, col + 1),
+                        "rule": {
+                            "condition": {"type": "BOOLEAN"},
+                            "showCustomUi": True,
+                            "strict": False,
+                        },
+                    }
                 }
-            }
-        )
+            )
         # A dropdown down the Type column so the valid types are pickable.
         # Strict: anything outside the list is rejected at entry.
         requests.append(
@@ -462,6 +471,26 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                             "values": [
                                 {"userEnteredValue": v}
                                 for v in FIELD_TYPES
+                            ],
+                        },
+                        "showCustomUi": True,
+                        "strict": True,
+                    },
+                }
+            }
+        )
+        # And one down the Break-out column, for the same reason.
+        requests.append(
+            {
+                "setDataValidation": {
+                    "range": _grid(
+                        setup_sheet_id, 1, 1000, c_breakout, c_breakout + 1),
+                    "rule": {
+                        "condition": {
+                            "type": "ONE_OF_LIST",
+                            "values": [
+                                {"userEnteredValue": v}
+                                for v in BREAKOUT_MODES
                             ],
                         },
                         "showCustomUi": True,

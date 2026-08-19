@@ -142,20 +142,24 @@ function buildHowTo_(ss) {
     'E  Format: optional number format: currency, percent, or number.\n' +
     'F  Show in views: dimensions only; check to add it as a filter dropdown (slicer) on ' +
     'the views.\n' +
-    'G  Break-out table: dimensions only; check to add a totals-per-value table for it on every view.\n' +
+    'G  Break-out table: dimensions only; pick total or partial to give it a break-out ' +
+    'block on every view. total lists a row per value (capped at 50, and the title says so ' +
+    'when it bites). partial gives 30 empty rows, each a dropdown of that dimension\'s ' +
+    'values, so you choose which ones the block covers - use it for a dimension with far ' +
+    'too many values to list, like campaigns. Leave it blank for no break-out.\n' +
     'H  Mapping: dimensions only; check to list its values in the mapping tab. ' +
     'Show / Break-out imply it; leave all three blank to keep a high-cardinality ' +
     'dimension out of Mapping.');
-  sheet.setRowHeight(7, 236);
+  sheet.setRowHeight(7, 300);
 
   heading_(sheet, 'A9', '3. Example setup');
   const example = [
     ['Field', 'Display name', 'Type', 'Formula', 'Format', 'Show in views',
      'Break-out table', 'Mapping'],
     ['Day', '', 'date', '', '', '', '', ''],
-    ['Region', 'Market Region', 'dimension', '', '', 'TRUE', 'TRUE', ''],
+    ['Region', 'Market Region', 'dimension', '', '', 'TRUE', 'total', ''],
     ['Channel', '', 'dimension', '', '', '', '', 'TRUE'],
-    ['Market', '', 'dimension', '', '', '', 'TRUE', ''],
+    ['Market', '', 'dimension', '', '', '', 'partial', ''],
     ['Spend', 'Media Spend', 'metric', '', 'currency', '', '', ''],
     ['Clicks', '', 'metric', '', 'number', '', '', ''],
     ['CPC', 'Cost per Click', 'calculated', '[Spend]/[Clicks]', 'currency', '', '', '']
@@ -169,13 +173,14 @@ function buildHowTo_(ss) {
                SpreadsheetApp.BorderStyle.SOLID);
   para_(sheet, 'A19',
     'Channel has only Mapping checked, so its values are listed in the mapping ' +
-    'tab but it gets no filter dropdown or break-out. Region and Market have Break-out table checked, so each gets its own ' +
-    'totals-per-value table. Rows render in this order, so a calculated metric ' +
+    'tab but it gets no filter dropdown or break-out. Region is broken out total, so ' +
+    'its block lists every region; Market is broken out partial, so its block is 30 ' +
+    'empty rows you pick markets into from a dropdown. Rows render in this order, so a calculated metric ' +
     'like CPC shows exactly where you place it. Spend, Region and CPC carry ' +
     'display names, so the views read "Media Spend", "Market Region" and "Cost ' +
     'per Click" while every formula still binds to Spend, Region and CPC; ' +
     'Clicks has none, so it shows as Clicks.');
-  sheet.setRowHeight(19, 58);
+  sheet.setRowHeight(19, 72);
 
   heading_(sheet, 'A21', '4. The data_source tab');
   para_(sheet, 'A22',
@@ -198,11 +203,12 @@ function buildHowTo_(ss) {
     'KPI totals: two From/To date ranges side by side per metric with a % change ' +
     'row underneath; the dates are dropdowns of the available dates and the ' +
     'rows fill in once both are picked. ' +
-    'Any dimension flagged Break-out table gets its own totals-per-value ' +
-    'table (capped at 50 values). A comparison tab lets you pick two campaigns ' +
+    'Any dimension flagged Break-out table gets its own block: total lists a row ' +
+    'per value (capped at 50), partial gives 30 rows you pick values into and ' +
+    'leaves a row blank until you do. A comparison tab lets you pick two campaigns ' +
     '(or other dimension values) and date ranges side by side, with a trend chart. ' +
     'The monthly view also carries a line chart.');
-  sheet.setRowHeight(25, 72);
+  sheet.setRowHeight(25, 86);
 
   heading_(sheet, 'A27', '6. Run it');
   para_(sheet, 'A28',

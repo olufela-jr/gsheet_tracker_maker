@@ -24,15 +24,17 @@ from .formulas import formula_tokens
 #   show:    dimensions only — True shows the dimension as a filter in the
 #            daily/weekly/monthly views; blank/False keeps it in the data but
 #            hides it from the front end
-#   breakout: dimensions only — True gives the dimension its own break-out
-#            table (totals per value) stacked on every view
+#   breakout: dimensions only — the break-out block this dimension gets on
+#            every view: "total" (a row per value of the dimension) or
+#            "partial" (a fixed block of rows whose labels are dropdowns the
+#            user picks values into). "" is no break-out block
 #   mapping: dimensions only — True lists the dimension's values in Mapping
 #            even when it is neither shown nor broken out (Show / Break-out
 #            imply a mapping column regardless)
 Field = namedtuple(
     "Field",
     ["name", "display", "type", "formula", "fmt", "show", "breakout", "mapping"],
-    defaults=(False, False, False),
+    defaults=(False, "", False),
 )
 
 
@@ -128,15 +130,43 @@ def _truthy(value):
     return value.strip().lower() in _TRUTHY
 
 
+# The two shapes a break-out block comes in. "total" gives a row per value of
+# the dimension; "partial" gives a fixed block of rows whose labels are blank
+# cells carrying a dropdown, so the user picks which values it covers.
+BREAKOUT_TOTAL = "total"
+BREAKOUT_PARTIAL = "partial"
+BREAKOUT_MODES = (BREAKOUT_TOTAL, BREAKOUT_PARTIAL)
+
+# Values a Break-out cell may carry that mean "no break-out table", including
+# the FALSE of a tracker still using the old checkbox.
+_NO_BREAKOUT = {"", "false", "no", "n", "0", "off", "-"}
+
+
+def _breakout_mode(value):
+    """The break-out mode a Setup cell asks for: "total", "partial", or "".
+
+    Anything non-blank that is not "partial" reads as "total" — which is what
+    the TRUE of a tracker built before this column became a dropdown means,
+    and is the forgiving reading of a typo. Erring towards "total" never
+    silently drops a table the user asked for; the strict dropdown scaffold
+    puts on the column keeps new trackers from relying on that.
+    """
+    mode = value.strip().lower()
+    if mode in _NO_BREAKOUT:
+        return ""
+    return BREAKOUT_PARTIAL if mode == BREAKOUT_PARTIAL else BREAKOUT_TOTAL
+
+
 def read_setup(client, cfg):
     """Read Setup rows below the header into a list of Field tuples.
 
     Row 1 is the header row and names the columns: Field, Display name, Type,
     Formula (calculated metrics), Format, Show in views (dimensions only —
     checked shows the dimension as a filter in the views, blank hides it),
-    Break-out table (dimensions only — checked gives the dimension its own
-    totals-per-value table on every view), and Mapping (dimensions only —
-    checked lists the values in Mapping even without Show / Break-out). It is
+    Break-out table (dimensions only — "total" or "partial" gives the
+    dimension its own break-out block on every view), and Mapping (dimensions
+    only — checked lists the values in Mapping even without Show / Break-out).
+    It is
     read, not assumed: setup_columns resolves each role from it, so the columns
     may be reordered and the optional ones left out.
     """
@@ -159,7 +189,7 @@ def read_setup(client, cfg):
                 formula=_cell(row, columns["formula"]),
                 fmt=_cell(row, columns["fmt"]).lower(),
                 show=_truthy(_cell(row, columns["show"])),
-                breakout=_truthy(_cell(row, columns["breakout"])),
+                breakout=_breakout_mode(_cell(row, columns["breakout"])),
                 mapping=_truthy(_cell(row, columns["mapping"])),
             )
         )
@@ -251,12 +281,26 @@ def dimensions_of(fields):
 
 
 def breakout_dimensions_of(fields):
-    """Dimension names that get their own break-out table, in Setup order.
+    """Dimension names that get their own break-out block, in Setup order.
 
-    Independent of Show: a dimension can be a filter, a break-out table, both,
-    or neither. A break-out table lists totals per value of the dimension.
+    Independent of Show: a dimension can be a filter, a break-out block, both,
+    or neither. A break-out block lists totals per value of the dimension.
     """
     return [f.name for f in fields if f.type == "dimension" and f.breakout]
+
+
+def breakout_modes_of(fields):
+    """{dimension name: "total" | "partial"} for the broken-out dimensions.
+
+    A dict for the same reason labels_of is one: dimensions reach the view
+    builders as bare names, so the mode lookup must not depend on two lists
+    staying in step. Keys match breakout_dimensions_of exactly.
+    """
+    return {
+        f.name: f.breakout
+        for f in fields
+        if f.type == "dimension" and f.breakout
+    }
 
 
 def mapping_dimensions_of(fields):
