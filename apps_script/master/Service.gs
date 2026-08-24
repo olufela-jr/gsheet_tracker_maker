@@ -165,9 +165,47 @@ function postToService_(payload) {
     muteHttpExceptions: true
   };
   try {
-    return JSON.parse(UrlFetchApp.fetch(url, options).getContentText());
+    const response = UrlFetchApp.fetch(url, options);
+    const code = response.getResponseCode();
+    const body = response.getContentText();
+    try {
+      return JSON.parse(body);
+    } catch (parseErr) {
+      // muteHttpExceptions means a rejected request arrives here as a normal
+      // response, and a non-JSON body is almost always Cloud Run's own HTML
+      // error page, served before the request ever reached the service. The
+      // status is the part that identifies which failure it is; parsing the
+      // HTML only ever reports that the body was not JSON.
+      SpreadsheetApp.getUi().alert(
+        'Request failed: HTTP ' + code + ' from Cloud Run, and the response ' +
+        'was not JSON.\n\n' + statusHint_(code) +
+        '\n\nResponse began:\n' + body.slice(0, 200));
+      return null;
+    }
   } catch (err) {
     SpreadsheetApp.getUi().alert('Request failed: ' + err);
     return null;
   }
+}
+
+/** What a non-JSON response with this status usually means. */
+function statusHint_(code) {
+  if (code === 403) {
+    return 'Cloud Run rejected the caller before the service saw the request. ' +
+      'Either this account lacks run.invoker, or the master\'s audience is no ' +
+      'longer registered on the service - a deploy drops the custom audience ' +
+      'unless MASTER_AUDIENCE is set in deploy/vars.sh. See SETUP.txt step 8.';
+  }
+  if (code === 401) {
+    return 'The identity token was not accepted. Re-authorize the master ' +
+      '(run any Tracker Admin item and accept the prompts).';
+  }
+  if (code === 404) {
+    return 'Nothing is serving at that URL - check SERVICE_URL in Config.gs.';
+  }
+  if (code >= 500) {
+    return 'The service accepted the request but failed to handle it. Check ' +
+      'the Cloud Run logs for tracker-service.';
+  }
+  return '';
 }

@@ -25,3 +25,10 @@ export ALLOWED_EMAILS=""
 export ADMIN_EMAILS=""
 export ALLOWED_DOMAIN=""
 export RATE_LIMIT_PER_MIN="30"
+
+# The master's OAuth client ID, registered on Cloud Run as a custom audience so
+# the identity token Apps Script mints is accepted (SETUP.txt step 8a prints
+# it). deploy.sh re-applies this on every deploy: `gcloud run deploy` replaces
+# the whole service spec, so an audience set only once gets silently dropped by
+# the next deploy and every Send 403s until someone re-adds it.
+export MASTER_AUDIENCE=""

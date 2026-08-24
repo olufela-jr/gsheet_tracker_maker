@@ -7,17 +7,21 @@ from datetime import date
 from config import DEFAULT_CONFIG
 from tracker import (
     Field,
+    SETUP_HEADERS,
     PERIOD_ROWS,
     ValidationError,
     blank_guarded,
     calc_cell_formula,
     is_calculated,
+    label_of,
+    labels_of,
     metric_fields_of,
     bucket_serial,
     bucket_sumifs_expr,
     build_calc_formula,
     build_sumifs_formula,
     breakout_dimensions_of,
+    breakout_modes_of,
     date_field_of,
     date_to_serial,
     dimensions_of,
@@ -31,17 +35,33 @@ from tracker import (
     picker_window_criteria,
     range_guarded,
     read_setup,
+    setup_columns,
     number_format_pattern,
     sumifs_expr,
     validate,
 )
 
 
+# A Setup header row with the optional Display name column left out. It is the
+# default here, so every fixture below doubles as coverage that the column is
+# genuinely optional. The full layout is exercised in TestDisplayName.
+SETUP_HEADER_NO_DISPLAY = [
+    "Field", "Type", "Formula", "Format", "Show in views",
+    "Break-out table", "Mapping",
+]
+
+SETUP_HEADER = [
+    "Field", "Display name", "Type", "Formula", "Format", "Show in views",
+    "Break-out table", "Mapping",
+]
+
+
 class FakeReader:
     """Fake client exposing just read_range for validate/read_setup tests."""
 
-    def __init__(self, setup_rows, headers):
-        self._setup = setup_rows  # rows for setup!A2:E
+    def __init__(self, setup_rows, headers, setup_header=None):
+        # Row 1 of Setup is the header row read_setup resolves columns from.
+        self._setup = [setup_header or SETUP_HEADER_NO_DISPLAY] + list(setup_rows)
         self._headers = headers
 
     def read_range(self, a1_range):
@@ -170,7 +190,8 @@ class TestCalculatedFields:
         assert [f.name for f in metric_fields_of(fields)] == ["Spend", "CPC"]
 
     def test_only_the_exact_calculated_spelling_counts(self):
-        f = Field(name="CPC", type="metric", formula="[Spend]/[Clicks]", fmt="")
+        f = Field(name="CPC", display="", type="metric",
+                  formula="[Spend]/[Clicks]", fmt="")
         assert not is_calculated(f)
 
 
@@ -229,12 +250,12 @@ class TestFormulaTokens:
 
 class TestDateFieldOf:
     def test_single_date(self):
-        fields = [Field("Day", "date", "", ""), Field("Spend", "metric", "", "")]
+        fields = [Field("Day", "", "date", "", ""), Field("Spend", "", "metric", "", "")]
         assert date_field_of(fields) == "Day"
 
     def test_none_when_missing_or_multiple(self):
-        assert date_field_of([Field("Spend", "metric", "", "")]) is None
-        two = [Field("A", "date", "", ""), Field("B", "date", "", "")]
+        assert date_field_of([Field("Spend", "", "metric", "", "")]) is None
+        two = [Field("A", "", "date", "", ""), Field("B", "", "date", "", "")]
         assert date_field_of(two) is None
 
 
@@ -435,10 +456,151 @@ class TestShowToggle:
 
     def test_dimensions_of_preserves_setup_order(self):
         fields = [
-            Field("Region", "dimension", "", "", True),
-            Field("Channel", "dimension", "", "", True),
+            Field("Region", "", "dimension", "", "", True),
+            Field("Channel", "", "dimension", "", "", True),
         ]
         assert dimensions_of(fields) == ["Region", "Channel"]
+
+
+class TestDisplayName:
+    """Setup's Display name column: the label, split from the identity."""
+
+    def test_read_setup_parses_the_display_column(self):
+        setup = [
+            ["Day", "", "date", "", "", "", "", ""],
+            ["Region", "Market Region", "dimension", "", "", "TRUE", "", ""],
+            ["Spend", "Media Spend", "metric", "", "currency", "", "", ""],
+            ["Clicks", "", "metric", "", "number", "", "", ""],
+        ]
+        fields = read_setup(
+            FakeReader(setup, ["Day"], setup_header=SETUP_HEADER), DEFAULT_CONFIG)
+        by_name = {f.name: f for f in fields}
+        assert by_name["Spend"].display == "Media Spend"
+        assert by_name["Spend"].type == "metric"
+        assert by_name["Spend"].fmt == "currency"
+        assert by_name["Region"].show is True
+        # A blank display name is not a label of its own.
+        assert by_name["Clicks"].display == ""
+
+    def test_label_falls_back_to_the_field_name(self):
+        fields = [
+            Field("Spend", "Media Spend", "metric", "", "currency"),
+            Field("Clicks", "", "metric", "", "number"),
+        ]
+        assert label_of(fields[0]) == "Media Spend"
+        assert label_of(fields[1]) == "Clicks"
+        assert labels_of(fields) == {"Spend": "Media Spend", "Clicks": "Clicks"}
+
+    def test_the_column_is_optional(self):
+        # Columns are resolved by header, so a Setup tab that never got a
+        # Display name column reads exactly as before — Type from B, Formula
+        # from C — and every field simply labels itself.
+        setup = [
+            ["Day", "date", "", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "TRUE", ""],
+            ["Spend", "metric", "", "currency", "", "", ""],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        by_name = {f.name: f for f in fields}
+        assert by_name["Region"].type == "dimension"
+        assert by_name["Region"].breakout == "total"
+        assert by_name["Spend"].fmt == "currency"
+        assert all(f.display == "" for f in fields)
+        assert labels_of(fields) == {
+            "Day": "Day", "Region": "Region", "Spend": "Spend"}
+
+    def test_columns_follow_the_header_not_the_position(self):
+        # A user who moves Display name to the end still gets it read.
+        moved = ["Field", "Type", "Formula", "Format", "Show in views",
+                 "Break-out table", "Mapping", "Display name"]
+        columns = setup_columns(moved)
+        assert columns["display"] == 7
+        assert columns["type"] == 1
+        setup = [["Spend", "metric", "", "currency", "", "", "", "Media Spend"]]
+        fields = read_setup(
+            FakeReader(setup, ["Spend"], setup_header=moved), DEFAULT_CONFIG)
+        assert fields[0].display == "Media Spend"
+        assert fields[0].fmt == "currency"
+
+    def test_a_role_no_header_names_is_absent(self):
+        # Nothing is guessed by position: an unnamed column is an absent one.
+        assert setup_columns(SETUP_HEADER_NO_DISPLAY)["display"] is None
+        assert setup_columns(SETUP_HEADER)["display"] == 1
+        assert setup_columns(["", "", ""]) == {
+            role: None for role, _ in SETUP_HEADERS}
+
+    def test_an_unnamed_header_row_is_a_clear_error(self):
+        # Reading by header means a header row that was never seeded would
+        # otherwise yield zero fields and surface as "No metrics declared".
+        setup = [["Spend", "metric", "", "currency", "", "", ""]]
+        client = FakeReader(setup, ["Spend"], setup_header=["", "", ""])
+        with pytest.raises(ValidationError) as exc:
+            read_setup(client, DEFAULT_CONFIG)
+        assert any("header row does not name" in e for e in exc.value.errors)
+        assert any("'Field'" in e and "'Type'" in e for e in exc.value.errors)
+
+    def test_optional_columns_may_be_dropped_entirely(self):
+        # A tracker with no calculated fields and no dimensions needs only
+        # Field and Type.
+        client = FakeReader(
+            [["Day", "date"], ["Spend", "metric"]],
+            ["Day", "Spend"],
+            setup_header=["Field", "Type"],
+        )
+        fields = read_setup(client, DEFAULT_CONFIG)
+        assert [f.name for f in fields] == ["Day", "Spend"]
+        assert all(f.display == "" and f.formula == "" for f in fields)
+
+    def test_duplicate_display_names_are_rejected(self):
+        # The Comparison metric picker matches on the label, and Sheets'
+        # MATCH ignores case, so two metrics sharing a label would always
+        # chart the first of them.
+        setup = [
+            ["Day", "", "date", "", "", "", "", ""],
+            ["Spend", "Cost", "metric", "", "currency", "", "", ""],
+            ["Budget", "cost", "metric", "", "currency", "", "", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend", "Budget"],
+                            setup_header=SETUP_HEADER)
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("both display as" in e for e in exc.value.errors)
+
+    def test_a_display_name_may_not_shadow_another_field(self):
+        setup = [
+            ["Day", "", "date", "", "", "", "", ""],
+            ["Spend", "", "metric", "", "currency", "", "", ""],
+            ["Budget", "Spend", "metric", "", "currency", "", "", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend", "Budget"],
+                            setup_header=SETUP_HEADER)
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert any("both display as 'Spend'" in e for e in exc.value.errors)
+
+    def test_duplicate_field_names_are_not_reported_twice(self):
+        # Two blank display names colliding is just a duplicate field name,
+        # which the name check already reports.
+        setup = [
+            ["Day", "", "date", "", "", "", "", ""],
+            ["Spend", "", "metric", "", "currency", "", "", ""],
+            ["Spend", "", "metric", "", "currency", "", "", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend"], setup_header=SETUP_HEADER)
+        with pytest.raises(ValidationError) as exc:
+            validate(client, DEFAULT_CONFIG)
+        assert not any("both display as" in e for e in exc.value.errors)
+        assert any("more than once" in e for e in exc.value.errors)
+
+    def test_display_name_does_not_have_to_match_a_header(self):
+        # The Field name is what binds to Data Source; the display name is
+        # free text and must not be checked against the headers.
+        setup = [
+            ["Day", "Date", "date", "", "", "", "", ""],
+            ["Spend", "Media Spend (£)", "metric", "", "currency", "", "", ""],
+        ]
+        client = FakeReader(setup, ["Day", "Spend"], setup_header=SETUP_HEADER)
+        assert validate(client, DEFAULT_CONFIG)["metrics"] == ["Spend"]
 
 
 class TestBreakoutColumn:
@@ -451,9 +613,56 @@ class TestBreakoutColumn:
         ]
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
         by_name = {f.name: f for f in fields}
-        assert by_name["Region"].breakout is True
-        assert by_name["Channel"].breakout is False
-        assert by_name["Market"].breakout is True
+        # A checkbox predates the total/partial dropdown, so its TRUE reads as
+        # a total break-out — the shape those trackers already render.
+        assert by_name["Region"].breakout == "total"
+        assert by_name["Channel"].breakout == ""
+        assert by_name["Market"].breakout == "total"
+
+    @pytest.mark.parametrize(
+        "cell,expected",
+        [
+            ("total", "total"),
+            ("partial", "partial"),
+            # The dropdown is lower case, but a hand-typed cell need not be.
+            ("Total", "total"),
+            ("PARTIAL", "partial"),
+            ("  partial  ", "partial"),
+            # A tracker built before the column became a dropdown carries a
+            # checkbox, whose TRUE means the break-out it already renders.
+            ("TRUE", "total"),
+            ("x", "total"),
+            # Off, in every spelling a checkbox or a person produces.
+            ("", ""),
+            ("FALSE", ""),
+            ("no", ""),
+            # Anything else errs towards showing the table rather than
+            # silently dropping one the user asked for.
+            ("top 30", "total"),
+        ],
+    )
+    def test_breakout_cell_reads_as_a_mode(self, cell, expected):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", cell],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        assert {f.name: f for f in fields}["Region"].breakout == expected
+
+    def test_breakout_modes_of_keys_match_breakout_dimensions_of(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "total"],
+            ["Campaign", "dimension", "", "", "", "partial"],
+            ["Channel", "dimension", "", "", "TRUE", ""],
+            ["Spend", "metric", "", "currency", "", "total"],
+        ]
+        fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
+        # A mode on a metric is meaningless and is ignored, and the two
+        # selectors must agree or a block would render with no mode.
+        assert breakout_dimensions_of(fields) == ["Region", "Campaign"]
+        assert breakout_modes_of(fields) == {
+            "Region": "total", "Campaign": "partial"}
 
     def test_breakout_is_independent_of_show(self):
         # Market is broken out but not shown; Channel is shown but not broken out.

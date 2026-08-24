@@ -10,6 +10,7 @@ from config import column_to_letter, sanitise_name, a1
 
 from .common import read_date_serials
 from .fields import (
+    SETUP_HEADERS,
     ValidationError,
     date_field_of,
     mapping_dimensions_of,
@@ -182,12 +183,24 @@ def generate_mapping(client, cfg):
     }
 
 
+def _row_count(client, sheet_id):
+    """The grid height of a tab, which is where Sheets pins named range ends."""
+    for sheet in client.get_spreadsheet().get("sheets", []):
+        props = sheet.get("properties", {})
+        if props.get("sheetId") == sheet_id:
+            return props.get("gridProperties", {}).get("rowCount")
+    return None
+
+
 def _data_source_range(sheet_id, col_index):
     """The GridRange for one Data Source column: <col>2:<col>.
 
-    Grid indices are 0-based and half-open. startRowIndex skips the header;
-    omitting endRowIndex leaves the range open to the bottom of the sheet, so
-    rows appended later still feed the SUMIFS formulas.
+    Grid indices are 0-based and half-open. startRowIndex skips the header.
+    We omit endRowIndex to ask for an open-ended range, but be aware that the
+    API does not store it that way: whatever we send, Sheets writes back an
+    explicit endRowIndex pinned to the tab's current rowCount. That holds for
+    addNamedRange, updateNamedRange, and delete-then-re-add alike, and for
+    whole-column ranges as much as this one. See _matches_range.
     """
     return {
         "sheetId": sheet_id,
@@ -197,18 +210,24 @@ def _data_source_range(sheet_id, col_index):
     }
 
 
-def _matches_range(current, wanted):
+def _matches_range(current, wanted, row_count):
     """True when an existing named range already has the shape we want.
 
-    The API omits keys rather than returning nulls, so a range capped at a row
-    count comes back carrying an endRowIndex that `wanted` does not have —
-    that difference is what marks a range as needing repair. A zero start
-    index is omitted too, hence the default: without it, column A would look
-    like a mismatch and be rewritten on every run.
+    Sheets always materialises the open end (see _data_source_range), so a
+    range bounded at the tab's current rowCount is as open as one can be and
+    must count as a match — otherwise every run re-points all of them, Sheets
+    re-caps them, and the next run does it again. A range bounded SHORT of the
+    grid is the real defect: the grid grew and the bound did not follow it, so
+    rows past the bound have dropped out of the SUMIFS.
+
+    The API omits keys rather than returning nulls, so a zero start index
+    comes back absent, hence the default: without it column A would look like
+    a mismatch and be rewritten on every run.
     """
     if current is None:
         return False
-    if "endRowIndex" in current:
+    end = current.get("endRowIndex")
+    if end is not None and end != row_count:
         return False
     for key, value in wanted.items():
         default = 0 if key in ("startRowIndex", "startColumnIndex") else None
@@ -220,12 +239,12 @@ def _matches_range(current, wanted):
 def create_named_ranges(client, cfg):
     """Create or repair one named range per Data Source column.
 
-    Each range covers 'data_source'!<col>2:<col> (header excluded, open-ended
-    to the bottom). The name is the sanitised header. A name that already
-    exists is re-pointed when its range has drifted from that shape — capped
-    at a row count, or aimed at the wrong column — so re-running this repairs
-    a sheet whose ranges were bounded instead of leaving them to be fixed by
-    hand in the Named ranges panel.
+    Each range covers 'data_source'!<col>2:<col>, which Sheets stores bounded
+    at the tab's current row count. The name is the sanitised header. A name
+    that already exists is re-pointed when it has drifted — aimed at the wrong
+    column, or bounded short of the grid because rows were added since it was
+    written. Re-running therefore re-extends the ranges over data loaded since
+    the last run, which is why a tracker needs a refresh after new data lands.
 
     Existing names are matched case-insensitively, because that is how Sheets
     itself scopes them: 'Year' and 'year' are one name, not two. Matching
@@ -240,6 +259,7 @@ def create_named_ranges(client, cfg):
         raise ValueError(
             "Data Source tab '{}' was not found.".format(cfg.data_source_tab)
         )
+    row_count = _row_count(client, sheet_id)
 
     # Keyed by the case-insensitive identity Sheets enforces, not the literal
     # spelling, so a range stored as 'year' is found when looking up 'Year'.
@@ -275,7 +295,7 @@ def create_named_ranges(client, cfg):
         # or both. Sending only the changed fields keeps a re-run a no-op.
         named_range = {"namedRangeId": current["namedRangeId"]}
         fields = []
-        if not _matches_range(current.get("range"), wanted):
+        if not _matches_range(current.get("range"), wanted, row_count):
             named_range["range"] = wanted
             fields.append("range")
         if current.get("name") != name:
@@ -353,10 +373,12 @@ def scaffold(client, cfg):
     # existing setup the user has filled in is never overwritten.
     created_setup = cfg.setup_tab.lower() in {m.lower() for m in missing}
     if created_setup:
+        # Seeded from SETUP_HEADERS, the same list read_setup resolves columns
+        # by, so the header we write and the header we parse cannot drift.
+        headers = [header for _role, header in SETUP_HEADERS]
         client.write_values(
-            a1(cfg.setup_tab, "A1:G1"),
-            [["Field", "Type", "Formula", "Format", "Show in views",
-              "Break-out table", "Mapping"]],
+            a1(cfg.setup_tab, "A1:{}1".format(column_to_letter(len(headers)))),
+            [headers],
             value_input_option="RAW",
         )
 

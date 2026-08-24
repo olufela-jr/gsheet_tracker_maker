@@ -45,19 +45,29 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
 (`mapping`, `daily`, `weekly`, `monthly`). Tab matching is case-insensitive, so
 `setup` and `Setup` are the same tab.
 
-- **setup** (input) declares the schema. Column A is the field name, column B is
-  the type (`metric`, `dimension`, or `date` - tag exactly one field `date`),
-  column C is an optional `[Field]`-token formula for a calculated metric (for
-  example `[Spend]/[Clicks]`), column D is a number-format hint
-  (`currency`, `percent`, `number`), column E is a per-dimension **Show in
-  views** checkbox, and column F is a per-dimension **Break-out table**
-  checkbox. Only dimensions with Show checked become filter dropdowns; an
-  unchecked dimension stays in the data but is hidden (metrics aggregate over
-  all its values). A dimension with Break-out checked gets its own totals-per-
-  value table on every view; the two toggles are independent. Raw fields must
+- **setup** (input) declares the schema, one row per field: **Field** (the
+  name), **Display name**, **Type** (`metric`, `dimension`, `date` - tag
+  exactly one field `date` - or `calculated`), **Formula** (a `[Field]`-token
+  expression for a calculated metric, for example `[Spend]/[Clicks]`),
+  **Format** (a number-format hint: `currency`, `percent`, `number`), the
+  per-dimension **Show in views** checkbox, the per-dimension **Break-out
+  table** mode (`total`, `partial`, or blank), and the per-dimension
+  **Mapping** checkbox. Only dimensions with Show checked become filter
+  dropdowns; an unchecked dimension stays in the data but is hidden (metrics
+  aggregate over all its values). A dimension with a break-out mode gets its
+  own block on every view; Show and Break-out are independent. Raw fields must
   match a data_source header exactly; calculated fields need not. Metrics and
   dimensions render in Setup row order, so a calculated metric placed between
-  two raw ones appears between them. Row 1 is a header and is skipped.
+  two raw ones appears between them. Row 1 is the header row, and the columns
+  are resolved by reading it rather than by position, so they may be reordered
+  and the optional ones left out; **Field** and **Type** must be named, or the
+  run stops with an error pointing at row 1.
+- **Display name** is optional and presentation only: it is the label the views
+  render a field under - table headers, slicer labels, break-out titles, the
+  Comparison metric picker - while the **Field** name stays the identity
+  everything binds to (the data_source header, the named range, the `[Field]`
+  token, the mapping column). Leave it blank to use the Field name. Each field's
+  label must be unique, since the Comparison metric picker selects by label.
 - **data_source** (input) is the raw data. Row 1 is headers, row 2+ is data.
 - **mapping** (generated) has one column per dimension that is shown or broken
   out: row 1 the dimension name, row 2 the `**` sentinel (meaning "All"), row
@@ -69,9 +79,19 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   columns tinted periwinkle). Weekly and monthly also carry a **compare block**
   (two period pickers showing each metric's A, B, and % change) and a **% change
   column** beside each metric in the matrix. Below that, each dimension flagged
-  for break-out gets a **totals-per-value table** (capped at 50 values, with the
-  cap shown in the title). The monthly view also carries a line chart of every
-  metric over time.
+  for break-out gets a **break-out block**, in one of two shapes. A `total`
+  break-out lists a row per value of the dimension, capped at 50 with the cap
+  shown in the title - note the cap takes the *first* 50 in mapping's
+  alphabetical order, not the top 50 by any metric. A `partial` break-out is 30
+  rows whose labels are blank cells carrying a dropdown of that dimension's
+  values (the `**` sentinel excluded): the reader picks which values the block
+  covers. Use it for a dimension whose interesting values are not the
+  alphabetically first ones - campaigns, mostly. A row whose label has not been
+  picked yet reads as zero rather than blank: its cells are the same SUMIFS a
+  `total` break-out writes, just pointed at an empty label cell, so a freshly
+  built block shows 30 zero rows until they are filled in. The picks are not
+  preserved across a rebuild; a refresh blanks them. The monthly view also
+  carries a line chart of every metric over time.
 - **comparison** (generated) is a split-screen A/B tab. Each side has a dropdown
   per shown dimension and its own Date from / Date to, so you can compare two
   campaigns (or channels, regions, ...) over the same or different ranges. A
@@ -94,7 +114,13 @@ Operate on a sheet (`{"token": "...", "spreadsheet_id": "...", "action": "..."}`
 - `generate_mapping` ensures the mapping tab exists, then writes one column per
   dimension with its distinct sorted values (mapping is cleared first).
 - `create_named_ranges` creates one named range per data_source column,
-  pointing at `'data_source'!<col>2:<col>`. Existing names are skipped.
+  pointing at `'data_source'!<col>2:<col>`. Existing names are re-pointed when
+  they have drifted (wrong column, or bounded short of the grid).
+
+  Note that the API cannot store an unbounded named range: whatever range is
+  sent, Sheets writes back an explicit end row pinned to the tab's current row
+  count, and that bound does not grow when the grid does. Rows added after the
+  last run therefore fall outside the ranges until the tracker is refreshed.
 - `build_views` rebuilds the three view tabs (daily, weekly, monthly): a
   banner, filter dropdowns, a KPI strip, and a per-bucket SUMIFS matrix, plus a
   line chart on the monthly tab.
@@ -214,26 +240,39 @@ gcloud run services add-iam-policy-binding tracker-service --region REGION \
 ```
 
 Set who may use it in `deploy/vars.sh` (`ALLOWED_EMAILS` / `ALLOWED_DOMAIN`,
-`ADMIN_EMAILS`) and redeploy. Then **Tracker Admin > New tracker** creates a
+`ADMIN_EMAILS`) and redeploy. `ADMIN_EMAILS` widens which trackers someone may
+act on, it does not admit them: an admin must also be on `ALLOWED_EMAILS` or in
+`ALLOWED_DOMAIN`. Then **Tracker Admin > New tracker** creates a
 clean tracker; fill its `setup` + `data_source` and **Operate on tracker** to
 build it. Full runbook in [SETUP.txt](SETUP.txt).
 
 ## Local development
 
-Run the unit tests (sanitisation, distinct value extraction, SUMIFS strings):
+Run the unit tests (sanitisation, distinct value extraction, SUMIFS strings).
+These drive fakes rather than the Sheets API, so they need nothing installed
+beyond pytest:
 
 ```sh
 cd service
 python -m pytest tests/ -q
 ```
 
-Run the service locally (you will need Application Default Credentials with
-access to the target sheet):
+Running the service itself does need the dependencies. Create a virtualenv at
+the repo root (`.venv` is gitignored) so the local interpreter mirrors what
+Cloud Run builds from:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -r service/requirements.txt
+.venv/bin/pip install pytest          # test-only, not a runtime dependency
+```
+
+Then run the service locally (you will need Application Default Credentials
+with access to the target sheet):
 
 ```sh
 cd service
-pip install -r requirements.txt
-python main.py
+../.venv/bin/python main.py
 # then: curl -X POST localhost:8080 -H 'Content-Type: application/json' \
 #   -d '{"spreadsheet_id":"...","action":"validate"}'
 ```

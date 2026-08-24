@@ -101,11 +101,16 @@ def grid_dv(sheet_id, r1, r2, c1, c2):
     }
 
 
-def one_of_range(sheet_id, row0, col0, source):
-    """A ONE_OF_RANGE dropdown on a single cell, sourced from an A1 range."""
+def one_of_range_rows(sheet_id, row0, col0, height, source):
+    """A ONE_OF_RANGE dropdown down `height` rows of one column.
+
+    One request covers the whole run rather than one per cell, which matters
+    for a partial break-out: its label column is 30 rows of the same rule, on
+    every break-out, on every view tab.
+    """
     return {
         "setDataValidation": {
-            "range": grid_dv(sheet_id, row0, row0 + 1, col0, col0 + 1),
+            "range": grid_dv(sheet_id, row0, row0 + height, col0, col0 + 1),
             "rule": {
                 "condition": {
                     "type": "ONE_OF_RANGE",
@@ -116,6 +121,11 @@ def one_of_range(sheet_id, row0, col0, source):
             },
         }
     }
+
+
+def one_of_range(sheet_id, row0, col0, source):
+    """A ONE_OF_RANGE dropdown on a single cell, sourced from an A1 range."""
+    return one_of_range_rows(sheet_id, row0, col0, 1, source)
 
 
 def date_picker(sheet_id, row0, col0):

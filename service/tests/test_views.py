@@ -15,6 +15,20 @@ from tracker import (
 )
 
 
+# A Setup header row with the optional Display name column left out, and the
+# full one. Most fixtures below use the former, so they also cover a tracker
+# that simply never labels its fields.
+SETUP_HEADER_NO_DISPLAY = [
+    "Field", "Type", "Formula", "Format", "Show in views",
+    "Break-out table", "Mapping",
+]
+
+SETUP_HEADER = [
+    "Field", "Display name", "Type", "Formula", "Format", "Show in views",
+    "Break-out table", "Mapping",
+]
+
+
 class FakeClient:
     """A fake covering the client surface build_view touches.
 
@@ -22,8 +36,10 @@ class FakeClient:
     optionally Mapping rows; records batch writes and updates for assertions.
     """
 
-    def __init__(self, setup_rows, headers, date_serials, tabs, mapping_rows=None):
-        self._setup = setup_rows
+    def __init__(self, setup_rows, headers, date_serials, tabs, mapping_rows=None,
+                 setup_header=None):
+        # Row 1 of Setup is the header row read_setup resolves columns from.
+        self._setup = [setup_header or SETUP_HEADER_NO_DISPLAY] + list(setup_rows)
         self._headers = headers
         self._date_serials = date_serials
         self._tabs = dict(tabs)  # title -> sheetId
@@ -373,6 +389,129 @@ class TestBuildView:
         assert 'Day, "<"&IF($D$3="",9.9E+307,$D$3+1)' in cell
 
 
+class TestPartialBreakout:
+    """A partial break-out: fixed rows the user picks values into."""
+
+    def _built(self):
+        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="partial")
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        return client
+
+    def _dropdowns(self, client):
+        return [
+            r["setDataValidation"] for batch in client.batch_updates
+            for r in batch
+            if "setDataValidation" in r
+            and r["setDataValidation"].get("rule", {}).get(
+                "condition", {}).get("type") == "ONE_OF_RANGE"
+        ]
+
+    def _block(self, client):
+        """The break-out's formula write: 30 rows starting in column B."""
+        writes = [
+            w for w in client.formula_writes
+            if w["range"].split("!")[-1].startswith("B")
+            and len(w["values"]) == 30
+        ]
+        assert len(writes) == 1
+        return writes[0]
+
+    def test_the_title_says_how_many_rows_there_are_to_pick(self):
+        assert self._built()._has_raw([["By Region  (pick up to 30)"]])
+
+    def test_the_label_column_is_left_empty(self):
+        client = self._built()
+        # The header still names the dimension, but the rows below it are the
+        # user's to fill: nothing is auto-populated from Mapping.
+        assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
+        assert not client._has_raw([["North"], ["South"]])
+
+    def _picker(self, client):
+        """The break-out's label-column dropdown, the only 30-row-tall one.
+
+        Column A also carries the compare block's From cells, so height is
+        what identifies this rule, not position.
+        """
+        rules = [
+            d for d in self._dropdowns(client)
+            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
+        ]
+        assert len(rules) == 1
+        return rules[0]
+
+    def test_rows_use_the_same_formula_a_total_breakout_does(self):
+        # A partial row is a total row whose label the reader supplies, so the
+        # cell is the plain date-scoped SUMIFS with nothing wrapped round it.
+        block = self._block(self._built())
+        rows = block["values"]
+        assert block["range"].endswith("B26")
+        assert len(rows) == 30
+        spend = rows[0][0]
+        assert spend.startswith("=SUMIFS(Spend, Region, A26,")
+        assert 'Day, ">="&IF($B$3="",0,$B$3)' in spend
+        # A calculated metric still just divides its sibling cells.
+        assert rows[0][2] == '=IFERROR(B26/C26, "")'
+        # The last row is 29 below the first, on its own label cell.
+        assert rows[29][0].startswith("=SUMIFS(Spend, Region, A55,")
+
+    def test_the_label_column_gets_one_dropdown_covering_all_thirty_rows(self):
+        rng = self._picker(self._built())["range"]
+        assert rng["startColumnIndex"] == 0
+        assert rng["endColumnIndex"] == 1
+        # Row 26 in A1 terms is index 25, and it runs 30 rows from there.
+        assert rng["startRowIndex"] == 25
+        assert rng["endRowIndex"] == 55
+
+    def test_the_picker_list_skips_the_all_sentinel(self):
+        picker = self._picker(self._built())
+        source = picker["rule"]["condition"]["values"][0]["userEnteredValue"]
+        # Mapping row 2 is "**" (meaning "All"); as a row label it would total
+        # every row rather than one value, so the list starts at row 3.
+        assert source == "='mapping'!A3:A"
+
+    def test_total_and_partial_blocks_stack_in_setup_order(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "total"],
+            ["Campaign", "dimension", "", "", "", "partial"],
+            ["Spend", "metric", "", "currency", "", ""],
+        ]
+        mapping = [
+            ["Region", "Campaign"],
+            ["**", "**"],
+            ["North", "Alpha"],
+            ["South", "Beta"],
+        ]
+        client = FakeClient(
+            setup,
+            ["Day", "Region", "Campaign", "Spend"],
+            [date_to_serial(date(2025, 8, 4))],
+            {"setup": 1, "data_source": 2, DEFAULT_CONFIG.weekly_tab: 3},
+            mapping_rows=mapping,
+        )
+        result = build_view(
+            client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert result["breakouts"] == ["Region", "Campaign"]
+        # The total block lists its Mapping values; the partial one names how
+        # many rows there are to pick and leaves them blank.
+        assert client._has_raw([["By Region"]])
+        assert client._has_raw([["North"], ["South"]])
+        assert client._has_raw([["By Campaign  (pick up to 30)"]])
+        assert not client._has_raw([["Alpha"], ["Beta"]])
+        # Only the partial block gets a picker, sourced from Campaign's
+        # Mapping column (B, the second mapping dimension).
+        pickers = [
+            d for d in self._dropdowns(client)
+            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
+        ]
+        assert len(pickers) == 1
+        assert (pickers[0]["rule"]["condition"]["values"][0]["userEnteredValue"]
+                == "='mapping'!B3:B")
+        # Campaign is below Region, so its rows start after the total block's
+        # two values plus the title, header and the two-row gap.
+        assert pickers[0]["range"]["startRowIndex"] > 25
+
+
 class TestBuildViews:
     def _client_all_tabs(self):
         c = _client(DEFAULT_CONFIG.daily_tab)
@@ -526,6 +665,93 @@ class TestComparison:
         assert len(added) == 1
         chart = added[0]["addChart"]["chart"]["spec"]["basicChart"]
         assert len(chart["series"]) == 2  # Side A and Side B
+
+
+class TestDisplayNames:
+    """Setup's Display name column relabels the dashboards, nothing else."""
+
+    def _client(self, tab):
+        setup = [
+            ["Day", "", "date", "", "", "", "", ""],
+            ["Region", "Market Region", "dimension", "", "", "TRUE", "TRUE", ""],
+            ["Spend", "Media Spend", "metric", "", "currency", "", "", ""],
+            ["Clicks", "", "metric", "", "number", "", "", ""],
+            ["CPC", "Cost per Click", "calculated", "[Spend]/[Clicks]",
+             "currency", "", "", ""],
+        ]
+        return FakeClient(
+            setup,
+            ["Day", "Region", "Spend", "Clicks"],
+            [date_to_serial(date(2025, 8, 4))],
+            {"setup": 1, "data_source": 2, tab: 3},
+            mapping_rows=[["Region"], ["**"], ["North"], ["South"]],
+            setup_header=SETUP_HEADER,
+        )
+
+    def test_view_blocks_render_the_display_names(self):
+        client = self._client(DEFAULT_CONFIG.weekly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        labels = ["Media Spend", "Clicks", "Cost per Click"]
+        # A metric with no display name keeps its field name (Clicks).
+        assert client._has_raw([["Totals"] + labels])
+        assert client._has_raw([["Period"] + labels])
+        assert client._has_raw([["From", "To"] + labels])
+        # The slicer label and the break-out table's title and header row.
+        assert client._has_raw([["Market Region", DEFAULT_CONFIG.sentinel]])
+        assert client._has_raw([["By Market Region"]])
+        assert client._has_raw([["Market Region"] + labels])
+
+    def test_formulas_still_bind_to_the_field_names(self):
+        # Relabelling must not re-point anything: the SUMIFS still reference
+        # the Spend / Region named ranges, which come from the Field column.
+        client = self._client(DEFAULT_CONFIG.weekly_tab)
+        result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert result["metrics"] == ["Spend", "Clicks", "CPC"]
+        assert result["dimensions"] == ["Region"]
+        formulas = str(client.formula_writes)
+        assert "SUMIFS(Spend, Region," in formulas
+        assert "Media Spend" not in formulas
+        assert "Market Region" not in formulas
+
+    def test_breakout_values_still_come_from_the_mapping_column(self):
+        # Mapping is keyed by field name, so a relabelled dimension must still
+        # find its values.
+        client = self._client(DEFAULT_CONFIG.weekly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        assert client._has_raw([["North"], ["South"]])
+
+    def test_comparison_picker_and_table_use_the_display_names(self):
+        client = self._client(DEFAULT_CONFIG.comparison_tab)
+        build_comparison(client, DEFAULT_CONFIG)
+        assert client._has_raw([["Media Spend"], ["Clicks"], ["Cost per Click"]])
+        assert client._has_raw([["Market Region", DEFAULT_CONFIG.sentinel]])
+        # The picker cell defaults to the first metric's label...
+        controls = [w["values"][0] for w in client.raw_writes
+                    if w["values"] and w["values"][0][0] == "Metric to chart"]
+        assert controls and controls[0][1] == "Media Spend"
+        # ...its dropdown offers the labels...
+        lists = [
+            v["rule"]["condition"]["values"] for batch in client.batch_updates
+            for r in batch if "setDataValidation" in r
+            for v in [r["setDataValidation"]]
+            # The tab-wide clear is a setDataValidation with no rule at all.
+            if v.get("rule", {}).get("condition", {}).get("type") == "ONE_OF_LIST"
+        ]
+        metric_list = [
+            [x["userEnteredValue"] for x in vals] for vals in lists
+            if "Media Spend" in [x["userEnteredValue"] for x in vals]
+        ]
+        assert metric_list == [["Media Spend", "Clicks", "Cost per Click"]]
+        # ...and the array its MATCH searches carries the same labels, so the
+        # picked one selects the right metric's expression.
+        helper = [
+            w for w in client.formula_writes
+            if any("CHOOSE(MATCH(" in str(cell) for row in w["values"] for cell in row)
+        ]
+        assert helper
+        cell = [c for row in helper[0]["values"] for c in row
+                if "CHOOSE(MATCH(" in str(c)][0]
+        assert '{"Media Spend";"Clicks";"Cost per Click"}' in cell
 
 
 class TestUnvalidatedFormula:

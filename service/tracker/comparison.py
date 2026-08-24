@@ -11,6 +11,11 @@ index from each side's start date (so unequal date ranges still compare).
 build_comparison orchestrates; each block on the tab (side panels, metrics
 table, controls, trend helper) is laid out by its own _add_* function that
 appends writes and formats to a shared Page.
+
+Labels come from label_of (Setup's Display name, falling back to the field
+name); the formulas underneath still bind to the field names. The metric
+picker is the one place that matters twice over: its dropdown and the array
+its MATCH searches must both carry labels, in metric_fields order.
 """
 
 from collections import namedtuple
@@ -31,6 +36,8 @@ from .fields import (
     date_field_of,
     dimensions_of,
     is_calculated,
+    label_of,
+    labels_of,
     mapping_dimensions_of,
     metric_fields_of,
     read_data_source_headers,
@@ -60,8 +67,8 @@ _Inputs = namedtuple(
     "_Inputs",
     [
         "cfg", "tab", "sentinel", "date_range",
-        "metric_fields", "metric_names", "metrics_meta",
-        "dimensions", "mapping_dims",
+        "metric_fields", "metric_names", "metric_labels", "metrics_meta",
+        "dimensions", "mapping_dims", "labels",
         "default_from", "default_to",
     ],
 )
@@ -115,10 +122,12 @@ def _comparison_inputs(client, cfg, fields, headers, serials):
         date_range=sanitise_name(date_name),
         metric_fields=metric_fields,
         metric_names=[m.name for m in metric_fields],
+        metric_labels=[label_of(m) for m in metric_fields],
         metrics_meta=[(is_calculated(m), number_format_pattern(m.fmt))
                       for m in metric_fields],
         dimensions=dimensions_of(fields),
         mapping_dims=mapping_dimensions_of(fields),
+        labels=labels_of(fields),
         default_from=min(numeric) if numeric else "",
         default_to=max(numeric) if numeric else "",
     )
@@ -163,8 +172,8 @@ def _add_side_filters(page, v, L):
     specs_a_abs, specs_b_abs = [], []
     for i, dim in enumerate(v.dimensions):
         r = L.first_dim_row + i
-        page.write("A{}".format(r), [[dim, v.sentinel]])
-        page.write("D{}".format(r), [[dim, v.sentinel]])
+        page.write("A{}".format(r), [[v.labels[dim], v.sentinel]])
+        page.write("D{}".format(r), [[v.labels[dim], v.sentinel]])
         rng = sanitise_name(dim)
         specs_a_rel.append((rng, "B{}".format(r)))
         specs_b_rel.append((rng, "E{}".format(r)))
@@ -198,7 +207,7 @@ def _add_metrics_table(page, v, L, sides):
                [["Metric", "Side A", "Side B", "% diff"]])
     if v.metric_fields:
         page.write("A{}".format(L.read_first_row),
-                   [[name] for name in v.metric_names])
+                   [[label] for label in v.metric_labels])
         # Metrics render as rows here, so a calculated field references the
         # sibling metric cells in the same column (one per side).
         row_of = {m.name: L.read_first_row + i
@@ -246,7 +255,7 @@ def _add_controls(page, v, L):
     """
     page.write("A{}".format(L.controls_row),
                [["Metric to chart",
-                 v.metric_names[0] if v.metric_names else "",
+                 v.metric_labels[0] if v.metric_labels else "",
                  "", "Granularity", "week"]])
     page.write("A{}".format(L.trend_title_row),
                [["Trend (aligned by period index from each start date)"]])
@@ -280,9 +289,14 @@ def _add_trend_helper(page, v, L, mp, gp, sides):
     page.fmt.append(theme.header_row(
         page.sheet_id, L.hp_header_row - 1, _HP - 1, _HP + 6))
 
-    if not v.metric_names:
+    if not v.metric_labels:
         return
-    arr = "{" + ";".join('"{}"'.format(n) for n in v.metric_names) + "}"
+    # The picker cell holds a label, so the array MATCH searches must hold the
+    # same labels, in metric_fields order — the CHOOSE below indexes the
+    # expressions by that position. A display name is free text, so a double
+    # quote in one has to be doubled or it would close the string literal.
+    arr = "{" + ";".join(
+        '"{}"'.format(str(n).replace('"', '""')) for n in v.metric_labels) + "}"
 
     def start_formula(from_cell, r):
         return ('=IF({fa}="","",IF({g}="day",{fa}+({ix}{r}-1),'
@@ -329,9 +343,9 @@ def _add_dropdowns(page, v, L):
         r0 = L.first_dim_row - 1 + i
         page.validations.append(one_of_range(page.sheet_id, r0, 1, source))  # side A (B)
         page.validations.append(one_of_range(page.sheet_id, r0, 4, source))  # side B (E)
-    if v.metric_names:
+    if v.metric_labels:
         page.validations.append(
-            one_of_list(page.sheet_id, L.controls_row - 1, 1, v.metric_names))
+            one_of_list(page.sheet_id, L.controls_row - 1, 1, v.metric_labels))
     page.validations.append(
         one_of_list(page.sheet_id, L.controls_row - 1, 4, ["day", "week", "month"]))
 

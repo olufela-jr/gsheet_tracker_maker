@@ -25,6 +25,11 @@ build_view orchestrates; each block is laid out by its own _add_* function
 that appends writes and formats to a shared Page. Positions come from the
 Page's running row cursor, so blocks that vary in height (period windows,
 dimension values) stack cleanly.
+
+Every label a block writes — slicer names, metric column headers, break-out
+titles — comes from label_of, so Setup's Display name column decides what the
+reader sees. The formulas underneath keep using the Field name, which is what
+the named ranges and [Field] tokens bind to.
 """
 
 from collections import namedtuple
@@ -38,16 +43,21 @@ from .common import (
     existing_chart_ids,
     grid_dv,
     one_of_range,
+    one_of_range_rows,
     read_date_serials,
     read_mapping_values,
 )
 from .comparison import build_comparison
 from .fields import (
+    BREAKOUT_PARTIAL,
     ValidationError,
     breakout_dimensions_of,
+    breakout_modes_of,
     date_field_of,
     dimensions_of,
     is_calculated,
+    label_of,
+    labels_of,
     mapping_dimensions_of,
     metric_fields_of,
     read_data_source_headers,
@@ -74,7 +84,7 @@ from .formulas import (
 )
 from .scaffold import ensure_grid, ensure_tab
 
-# Most values a single break-out table renders, so a high-cardinality dimension
+# Most values a total break-out renders, so a high-cardinality dimension
 # cannot stack thousands of rows. The cap is shown in the table title.
 MAX_BREAKOUT_VALUES = 50
 
@@ -83,7 +93,20 @@ MAX_BREAKOUT_VALUES = 50
 # actual width at use, since a clear past the last column is an error.
 DV_CLEAR_COLS = 60
 
+# Rows in a partial break-out. They start blank and each carries a dropdown of
+# the dimension's values, so the user picks which values the block covers —
+# the answer to a dimension whose interesting values are not the first 50
+# alphabetically.
+BREAKOUT_PARTIAL_ROWS = 30
+
 # Everything the block builders need about one view, resolved once.
+#   metric_names:  Setup field names — identity: named ranges, [Field] tokens
+#   metric_labels: the same metrics as the dashboard renders them (Display
+#                  name, falling back to the field name); headers only
+#   labels:        {field name: dashboard label} for the dimensions, which
+#                  reach the builders as bare names
+#   breakout_modes: {dimension name: "total" | "partial"}, keyed like
+#                  breakouts — which shape each break-out block takes
 #   metrics_meta:  (is_calculated, number_format_pattern) per metric
 #   num_periods:   rows in the period matrix (the PERIOD_ROWS window)
 #   has_compare:   the From/To compare table; weekly and monthly only
@@ -94,8 +117,9 @@ _View = namedtuple(
     [
         "cfg", "tab", "granularity", "sentinel", "date_range",
         "dates_src", "years_src",
-        "metric_fields", "metric_names", "metrics_meta",
-        "dimensions", "breakouts", "mapping_dims", "breakout_values",
+        "metric_fields", "metric_names", "metric_labels", "metrics_meta",
+        "dimensions", "breakouts", "breakout_modes", "mapping_dims",
+        "breakout_values", "labels",
         "num_periods", "has_metrics", "has_compare",
         "date_pattern", "kpi_last_col", "end_col",
     ],
@@ -156,12 +180,15 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers,
         years_src=years_src,
         metric_fields=metric_fields,
         metric_names=[m.name for m in metric_fields],
+        metric_labels=[label_of(m) for m in metric_fields],
         metrics_meta=[(is_calculated(m), number_format_pattern(m.fmt))
                       for m in metric_fields],
         dimensions=dimensions,
         breakouts=breakouts,
+        breakout_modes=breakout_modes_of(fields),
         mapping_dims=mapping_dims,
         breakout_values=breakout_values or {},
+        labels=labels_of(fields),
         num_periods=PERIOD_ROWS[granularity],
         has_metrics=has_metrics,
         has_compare=has_compare,
@@ -261,7 +288,7 @@ def _add_filter_header(page, v):
         row_dims = v.dimensions[gr * PAIRS_PER_ROW:(gr + 1) * PAIRS_PER_ROW]
         line = []
         for dim in row_dims:
-            line.extend([dim, v.sentinel])
+            line.extend([v.labels[dim], v.sentinel])
         page.write("A{}".format(grid_first + gr), [line])
     for r0, c0 in drop_positions:
         page.fmt.append(theme.header_row(page.sheet_id, r0, c0 - 1, c0))
@@ -313,7 +340,7 @@ def _add_kpi_strip(page, v, dim_specs):
         return
     label_row = page.row
     value_row = page.row + 1
-    page.write("A{}".format(label_row), [["Totals"] + v.metric_names])
+    page.write("A{}".format(label_row), [["Totals"] + v.metric_labels])
     cell_of = _metric_cell_of(v, 2, value_row)
     page.write_formulas(
         "B{}".format(value_row),
@@ -348,7 +375,7 @@ def _add_compare_block(page, v, dim_specs):
     a_row = page.row + 1
     b_row = page.row + 2
     diff_row = page.row + 3
-    page.write("A{}".format(header_row), [["From", "To"] + v.metric_names])
+    page.write("A{}".format(header_row), [["From", "To"] + v.metric_labels])
 
     def totals(row):
         lower = '">="&$A{}'.format(row)
@@ -415,7 +442,7 @@ def _add_period_matrix(page, v, dim_specs):
     header_row = page.row + 1
     first_data = page.row + 2
     page.write("A{}".format(title_row), [["By {}".format(v.granularity)]])
-    page.write("A{}".format(header_row), [["Period"] + v.metric_names])
+    page.write("A{}".format(header_row), [["Period"] + v.metric_labels])
 
     periods = [[period_start_formula(v.granularity)]]
     for j in range(1, v.num_periods):
@@ -457,35 +484,55 @@ def _add_period_matrix(page, v, dim_specs):
 
 
 def _add_breakout_tables(page, v, dim_specs, pickers):
-    """One totals-per-value table per broken-out dimension, stacked in order.
+    """One break-out block per broken-out dimension, stacked in Setup order.
 
-    Each total is scoped to the tab's date controls (the pickers at the top
-    of the sheet); a blank picker cell leaves that side of the window open.
+    A *total* break-out lists every value of the dimension, capped so one
+    high-cardinality dimension cannot stack thousands of rows; the cap is
+    surfaced in the title, never silent. A *partial* break-out is a fixed run
+    of rows whose labels are left blank, each carrying a dropdown of the
+    dimension's values: the user picks which values the block covers, which is
+    the answer for a dimension whose interesting values are not the first
+    MAX_BREAKOUT_VALUES alphabetically.
+
+    Either way the totals are scoped to the tab's date controls (the pickers
+    at the top of the sheet); a blank picker cell leaves that side of the
+    window open.
     """
     lower, upper = picker_window_criteria(v.granularity, pickers)
     for bd in v.breakouts:
-        all_vals = v.breakout_values.get(bd, [])
-        # Cap high-cardinality dimensions so one break-out cannot push a table
-        # thousands of rows tall; the cap is surfaced, never silent.
-        vals = all_vals[:MAX_BREAKOUT_VALUES]
-        truncated = len(all_vals) > MAX_BREAKOUT_VALUES
+        partial = v.breakout_modes.get(bd) == BREAKOUT_PARTIAL
+        title = "By {}".format(v.labels[bd])
+        if partial:
+            # Nothing to write into the label column: the rows are the user's
+            # to fill, and the tab was cleared before this ran.
+            vals = []
+            num_rows = BREAKOUT_PARTIAL_ROWS
+            title += "  (pick up to {})".format(num_rows)
+        else:
+            all_vals = v.breakout_values.get(bd, [])
+            vals = all_vals[:MAX_BREAKOUT_VALUES]
+            num_rows = len(vals)
+            if len(all_vals) > MAX_BREAKOUT_VALUES:
+                title += "  (first {} of {})".format(
+                    MAX_BREAKOUT_VALUES, len(all_vals))
+
         bd_range = sanitise_name(bd)
         other_specs = [spec for dim, spec in zip(v.dimensions, dim_specs) if dim != bd]
-        title = "By {}".format(bd)
-        if truncated:
-            title += "  (first {} of {})".format(MAX_BREAKOUT_VALUES, len(all_vals))
         title_row = page.row
         header_row = page.row + 1
         first_data = page.row + 2
         page.write("A{}".format(title_row), [[title]])
-        page.write("A{}".format(header_row), [[bd] + v.metric_names])
-        if vals:
-            page.write("A{}".format(first_data), [[val] for val in vals])
+        page.write("A{}".format(header_row), [[v.labels[bd]] + v.metric_labels])
+        if num_rows:
+            if vals:
+                page.write("A{}".format(first_data), [[val] for val in vals])
             block = []
-            for k, val_ in enumerate(vals):
+            for k in range(num_rows):
                 vrow = first_data + k
                 vcell = "A{}".format(vrow)
                 cell_of = _metric_cell_of(v, 2, vrow)
+                # Identical for both modes: a partial row is a total row whose
+                # label the reader supplies, so the formula must not diverge.
                 block.append([
                     calc_cell_formula(m.formula, cell_of) if is_calculated(m)
                     else breakout_formula(m, bd_range, vcell, v.date_range,
@@ -496,8 +543,8 @@ def _add_breakout_tables(page, v, dim_specs, pickers):
 
         page.fmt.append(theme.section_title(page.sheet_id, title_row - 1, v.kpi_last_col))
         page.fmt.append(theme.header_row(page.sheet_id, header_row - 1, 0, v.kpi_last_col))
-        if vals:
-            end = first_data - 1 + len(vals)
+        if num_rows:
+            end = first_data - 1 + num_rows
             page.fmt.append(theme.value_cells(
                 page.sheet_id, first_data - 1, end, 0, v.kpi_last_col))
             for i, (is_calc, pattern) in enumerate(v.metrics_meta):
@@ -509,7 +556,16 @@ def _add_breakout_tables(page, v, dim_specs, pickers):
             page.fmt.append(theme.outer_border(
                 page.sheet_id, header_row - 1, end, 0, v.kpi_last_col))
 
-        page.row = first_data + len(vals) + 2
+        if partial:
+            # Source from Mapping row 3, not row 2: row 2 holds the "**"
+            # sentinel, and as a row label that would mean "every row" rather
+            # than one value of the dimension.
+            map_col = column_to_letter(v.mapping_dims.index(bd) + 1)
+            source = "=" + a1(v.cfg.mapping_tab, "{c}3:{c}".format(c=map_col))
+            page.validations.append(one_of_range_rows(
+                page.sheet_id, first_data - 1, 0, num_rows, source))
+
+        page.row = first_data + num_rows + 2
 
 
 def _add_dropdowns(page, v, drop_positions):

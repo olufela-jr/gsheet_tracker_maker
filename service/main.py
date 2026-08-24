@@ -182,8 +182,10 @@ def _claim_tracker(cfg, spreadsheet_id, caller):
     )
     try:
         tracker.log_tracker(BigQueryClient(cfg.bigquery_project), cfg, record)
-    except Exception:  # noqa: BLE001 - claiming is best-effort
-        pass
+    except Exception as exc:  # noqa: BLE001 - claiming is best-effort
+        # The action still runs, but the sheet stays unowned and the next caller
+        # will claim it instead. Audit it rather than losing it silently.
+        _audit(caller, "claim", spreadsheet_id, "claim_failed", reason=str(exc))
 
 
 @app.post("/")
@@ -194,13 +196,17 @@ def handle():
 
     # Authenticate the caller from the token in the request body, then gate on
     # the allowlist and the per-caller rate limit.
+    # identified holds the caller once the token verifies, so a later denial is
+    # audited against the real email. Only a token that fails to verify has no
+    # identity to log.
+    identified = None
     try:
-        caller = auth.verify_caller(payload.get("token"))
+        identified = caller = auth.verify_caller(payload.get("token"))
         if not auth.is_allowed(caller, cfg):
             raise auth.AuthError("Caller not allowed", 403)
         auth.check_rate_limit(caller, cfg.rate_limit_per_min)
     except auth.AuthError as exc:
-        _audit(getattr(exc, "email", None), action, payload.get("spreadsheet_id"),
+        _audit(identified, action, payload.get("spreadsheet_id"),
                "denied", reason=exc.message)
         return _error(exc.message, code=exc.code)
 
@@ -235,16 +241,26 @@ def handle():
     # or one not yet in the registry (a brought-in sheet) which they then claim.
     # Admins may act on anything.
     if not auth.is_admin(caller, cfg):
-        owner = None
-        if cfg.bigquery_dataset:
-            owner = BigQueryClient(cfg.bigquery_project).created_by(
-                cfg.bigquery_dataset, cfg.bigquery_table, spreadsheet_id
-            )
-        if owner is None:
-            _claim_tracker(cfg, spreadsheet_id, caller)  # brought-in sheet
-        elif owner.lower() != caller:
-            _audit(caller, action, spreadsheet_id, "denied", reason="not owner")
-            return _error("Not authorized for this tracker", code=403)
+        if not cfg.bigquery_dataset:
+            # No registry configured (local, tests). Nothing to check against, so
+            # the action proceeds -- but say so, or a mistyped BIGQUERY_DATASET in
+            # prod would turn ownership off with no trace anywhere.
+            _audit(caller, action, spreadsheet_id, "ownership_unenforced",
+                   reason="no bigquery_dataset configured")
+        else:
+            try:
+                owner = BigQueryClient(cfg.bigquery_project).created_by(
+                    cfg.bigquery_dataset, cfg.bigquery_table, spreadsheet_id
+                )
+            except Exception as exc:  # noqa: BLE001 - an unrunnable check is not a pass
+                _audit(caller, action, spreadsheet_id, "denied",
+                       reason="ownership lookup failed: {}".format(exc))
+                return _error("Cannot verify tracker ownership right now", code=503)
+            if owner is None:
+                _claim_tracker(cfg, spreadsheet_id, caller)  # brought-in sheet
+            elif owner.lower() != caller:
+                _audit(caller, action, spreadsheet_id, "denied", reason="not owner")
+                return _error("Not authorized for this tracker", code=403)
 
     _audit(caller, action, spreadsheet_id, "start")
     return _run(
