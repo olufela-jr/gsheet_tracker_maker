@@ -423,19 +423,20 @@ class TestPartialBreakout:
         assert len(rules) == 1
         return rules[0]
 
-    def test_every_row_is_blank_guarded_so_unpicked_rows_stay_empty(self):
+    def test_rows_use_the_same_formula_a_total_breakout_does(self):
+        # A partial row is a total row whose label the reader supplies, so the
+        # cell is the plain date-scoped SUMIFS with nothing wrapped round it.
         block = self._block(self._built())
         rows = block["values"]
         assert block["range"].endswith("B26")
         assert len(rows) == 30
-        # A raw metric: guarded, then the usual date-scoped SUMIFS.
         spend = rows[0][0]
-        assert spend.startswith('=IF(A26="","",SUMIFS(Spend, Region, A26,')
+        assert spend.startswith("=SUMIFS(Spend, Region, A26,")
         assert 'Day, ">="&IF($B$3="",0,$B$3)' in spend
-        # A calculated metric guards the same way around its sibling refs.
-        assert rows[0][2] == '=IF(A26="","",IFERROR(B26/C26, ""))'
-        # The last row is 29 below the first, and still guarded on its own cell.
-        assert rows[29][0].startswith('=IF(A55="","",SUMIFS(Spend, Region, A55,')
+        # A calculated metric still just divides its sibling cells.
+        assert rows[0][2] == '=IFERROR(B26/C26, "")'
+        # The last row is 29 below the first, on its own label cell.
+        assert rows[29][0].startswith("=SUMIFS(Spend, Region, A55,")
 
     def test_the_label_column_gets_one_dropdown_covering_all_thirty_rows(self):
         rng = self._picker(self._built())["range"]

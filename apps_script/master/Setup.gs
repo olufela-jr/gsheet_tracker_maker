@@ -205,7 +205,7 @@ function buildHowTo_(ss) {
     'rows fill in once both are picked. ' +
     'Any dimension flagged Break-out table gets its own block: total lists a row ' +
     'per value (capped at 50), partial gives 30 rows you pick values into and ' +
-    'leaves a row blank until you do. A comparison tab lets you pick two campaigns ' +
+    'reads a row as zero until you pick its value. A comparison tab lets you pick two campaigns ' +
     '(or other dimension values) and date ranges side by side, with a trend chart. ' +
     'The monthly view also carries a line chart.');
   sheet.setRowHeight(25, 86);

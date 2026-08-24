@@ -526,19 +526,14 @@ def _add_breakout_tables(page, v, dim_specs, pickers):
                 vrow = first_data + k
                 vcell = "A{}".format(vrow)
                 cell_of = _metric_cell_of(v, 2, vrow)
-                row = []
-                for m in v.metric_fields:
-                    cell = (
-                        calc_cell_formula(m.formula, cell_of) if is_calculated(m)
-                        else breakout_formula(m, bd_range, vcell, v.date_range,
-                                              lower, upper, other_specs, v.sentinel)
-                    )
-                    # A row nobody has picked a value for has a blank label,
-                    # and SUMIFS against a blank criterion totals the rows
-                    # whose dimension value is empty rather than nothing at
-                    # all. Guard so an unused row simply stays empty.
-                    row.append(blank_guarded(cell, vcell) if partial else cell)
-                block.append(row)
+                # Identical for both modes: a partial row is a total row whose
+                # label the reader supplies, so the formula must not diverge.
+                block.append([
+                    calc_cell_formula(m.formula, cell_of) if is_calculated(m)
+                    else breakout_formula(m, bd_range, vcell, v.date_range,
+                                          lower, upper, other_specs, v.sentinel)
+                    for m in v.metric_fields
+                ])
             page.write_formulas("B{}".format(first_data), block)
 
         page.fmt.append(theme.section_title(page.sheet_id, title_row - 1, v.kpi_last_col))

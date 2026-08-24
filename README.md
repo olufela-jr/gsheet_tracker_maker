@@ -85,10 +85,13 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   alphabetical order, not the top 50 by any metric. A `partial` break-out is 30
   rows whose labels are blank cells carrying a dropdown of that dimension's
   values (the `**` sentinel excluded): the reader picks which values the block
-  covers, and a row stays empty until they do. Use it for a dimension whose
-  interesting values are not the alphabetically first ones - campaigns, mostly.
-  The picks are not preserved across a rebuild; a refresh blanks them. The
-  monthly view also carries a line chart of every metric over time.
+  covers. Use it for a dimension whose interesting values are not the
+  alphabetically first ones - campaigns, mostly. A row whose label has not been
+  picked yet reads as zero rather than blank: its cells are the same SUMIFS a
+  `total` break-out writes, just pointed at an empty label cell, so a freshly
+  built block shows 30 zero rows until they are filled in. The picks are not
+  preserved across a rebuild; a refresh blanks them. The monthly view also
+  carries a line chart of every metric over time.
 - **comparison** (generated) is a split-screen A/B tab. Each side has a dropdown
   per shown dimension and its own Date from / Date to, so you can compare two
   campaigns (or channels, regions, ...) over the same or different ranges. A
