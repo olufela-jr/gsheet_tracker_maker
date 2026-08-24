@@ -103,7 +103,13 @@ STEP 8 - Auth: register the master, set the allowlist
             Utilities.base64DecodeWebSafe(t.split('.')[1])).getDataAsString()).aud);
         }
 
-  8b. Register it as the only custom audience:
+  8b. Put it in deploy/vars.sh as MASTER_AUDIENCE, so deploy.sh re-applies it
+      on every deploy. This matters: "gcloud run deploy" replaces the whole
+      service spec, so an audience registered only once is silently dropped by
+      the next deploy, and every Send then fails with a 403 from Cloud Run's
+      front end (which the master reports as a non-JSON response).
+
+      To register it right now without a full deploy:
         gcloud run services update <SERVICE_NAME> --region <REGION> \
           --clear-custom-audiences
         gcloud run services update <SERVICE_NAME> --region <REGION> \
