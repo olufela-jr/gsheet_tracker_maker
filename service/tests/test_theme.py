@@ -96,14 +96,20 @@ class TestInputTabFormat:
         # Strict: only the listed types are accepted at entry.
         assert rule["rule"]["strict"] is True
 
-    def test_breakout_column_gets_a_dropdown_of_the_modes(self):
-        # Column G (index 6): a mode, not a toggle, so a dropdown rather than
-        # the checkbox its neighbours carry.
-        rule = self._dropdown_on(6)
+    def test_breakout_column_gets_a_number_rule(self):
+        # Column G (index 6) holds a row count, so it is validated as a
+        # positive number rather than offered as a list or a checkbox.
+        rules = [
+            v for v in self._setup_validations()
+            if v["rule"]["condition"]["type"] == "NUMBER_GREATER"
+        ]
+        assert len(rules) == 1
+        rule = rules[0]
+        assert rule["range"]["startColumnIndex"] == 6
         assert rule["range"]["endColumnIndex"] == 7
         assert rule["range"]["startRowIndex"] == 1
-        values = [v["userEnteredValue"] for v in rule["rule"]["condition"]["values"]]
-        assert values == ["total", "partial"]
+        assert rule["rule"]["condition"]["values"] == [{"userEnteredValue": "0"}]
+        # Strict rejects text at entry; blank cells stay allowed.
         assert rule["rule"]["strict"] is True
 
     def test_toggle_columns_keep_their_checkboxes(self):

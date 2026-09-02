@@ -24,17 +24,16 @@ from .formulas import formula_tokens
 #   show:    dimensions only — True shows the dimension as a filter in the
 #            daily/weekly/monthly views; blank/False keeps it in the data but
 #            hides it from the front end
-#   breakout: dimensions only — the break-out block this dimension gets on
-#            every view: "total" (a row per value of the dimension) or
-#            "partial" (a fixed block of rows whose labels are dropdowns the
-#            user picks values into). "" is no break-out block
+#   breakout: dimensions only — rows the dimension's break-out block gets on
+#            every view, filled with its first values and each label a
+#            dropdown the reader can swap. 0 is no break-out block
 #   mapping: dimensions only — True lists the dimension's values in Mapping
 #            even when it is neither shown nor broken out (Show / Break-out
 #            imply a mapping column regardless)
 Field = namedtuple(
     "Field",
     ["name", "display", "type", "formula", "fmt", "show", "breakout", "mapping"],
-    defaults=(False, "", False),
+    defaults=(False, 0, False),
 )
 
 
@@ -130,31 +129,38 @@ def _truthy(value):
     return value.strip().lower() in _TRUTHY
 
 
-# The two shapes a break-out block comes in. "total" gives a row per value of
-# the dimension; "partial" gives a fixed block of rows whose labels are blank
-# cells carrying a dropdown, so the user picks which values it covers.
-BREAKOUT_TOTAL = "total"
-BREAKOUT_PARTIAL = "partial"
-BREAKOUT_MODES = (BREAKOUT_TOTAL, BREAKOUT_PARTIAL)
+# Rows a break-out block gets when the Setup cell asks for one without giving
+# a usable number (the TRUE of an old checkbox, or the "total" of the
+# short-lived mode dropdown). 50 matches what those trackers already render.
+DEFAULT_BREAKOUT_CAP = 50
+
+# Ceiling on any cap, so a typo cannot stack thousands of SUMIFS rows on
+# three tabs.
+MAX_BREAKOUT_CAP = 200
 
 # Values a Break-out cell may carry that mean "no break-out table", including
 # the FALSE of a tracker still using the old checkbox.
 _NO_BREAKOUT = {"", "false", "no", "n", "0", "off", "-"}
 
 
-def _breakout_mode(value):
-    """The break-out mode a Setup cell asks for: "total", "partial", or "".
+def _breakout_cap(value):
+    """Rows the Setup Break-out cell asks for; 0 means no break-out.
 
-    Anything non-blank that is not "partial" reads as "total" — which is what
-    the TRUE of a tracker built before this column became a dropdown means,
-    and is the forgiving reading of a typo. Erring towards "total" never
-    silently drops a table the user asked for; the strict dropdown scaffold
-    puts on the column keeps new trackers from relying on that.
+    A number is the cap, clamped to MAX_BREAKOUT_CAP. Legacy spellings keep
+    old trackers rendering unchanged: TRUE / "total" read as the default, and
+    "partial" (the short-lived mode dropdown) as the 30 rows it meant.
+    Anything else non-blank errs towards the default rather than silently
+    dropping a table the user asked for; the number validation scaffold puts
+    on the column keeps new trackers from relying on that.
     """
-    mode = value.strip().lower()
-    if mode in _NO_BREAKOUT:
-        return ""
-    return BREAKOUT_PARTIAL if mode == BREAKOUT_PARTIAL else BREAKOUT_TOTAL
+    v = value.strip().lower()
+    if v in _NO_BREAKOUT:
+        return 0
+    try:
+        cap = int(float(v))
+    except ValueError:
+        return 30 if v == "partial" else DEFAULT_BREAKOUT_CAP
+    return min(cap, MAX_BREAKOUT_CAP) if cap > 0 else 0
 
 
 def read_setup(client, cfg):
@@ -163,12 +169,11 @@ def read_setup(client, cfg):
     Row 1 is the header row and names the columns: Field, Display name, Type,
     Formula (calculated metrics), Format, Show in views (dimensions only —
     checked shows the dimension as a filter in the views, blank hides it),
-    Break-out table (dimensions only — "total" or "partial" gives the
-    dimension its own break-out block on every view), and Mapping (dimensions
-    only — checked lists the values in Mapping even without Show / Break-out).
-    It is
-    read, not assumed: setup_columns resolves each role from it, so the columns
-    may be reordered and the optional ones left out.
+    Break-out table (dimensions only — a row count gives the dimension its
+    own break-out block on every view), and Mapping (dimensions only —
+    checked lists the values in Mapping even without Show / Break-out). It is
+    read, not assumed: setup_columns resolves each role from it, so the
+    columns may be reordered and the optional ones left out.
     """
     rows = client.read_range(a1(cfg.setup_tab, "A1:Z"))
     columns = setup_columns(rows[0] if rows else [])
@@ -189,7 +194,7 @@ def read_setup(client, cfg):
                 formula=_cell(row, columns["formula"]),
                 fmt=_cell(row, columns["fmt"]).lower(),
                 show=_truthy(_cell(row, columns["show"])),
-                breakout=_breakout_mode(_cell(row, columns["breakout"])),
+                breakout=_breakout_cap(_cell(row, columns["breakout"])),
                 mapping=_truthy(_cell(row, columns["mapping"])),
             )
         )
@@ -289,11 +294,11 @@ def breakout_dimensions_of(fields):
     return [f.name for f in fields if f.type == "dimension" and f.breakout]
 
 
-def breakout_modes_of(fields):
-    """{dimension name: "total" | "partial"} for the broken-out dimensions.
+def breakout_caps_of(fields):
+    """{dimension name: row cap} for the broken-out dimensions.
 
     A dict for the same reason labels_of is one: dimensions reach the view
-    builders as bare names, so the mode lookup must not depend on two lists
+    builders as bare names, so the cap lookup must not depend on two lists
     staying in step. Keys match breakout_dimensions_of exactly.
     """
     return {

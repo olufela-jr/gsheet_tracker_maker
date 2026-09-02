@@ -47,10 +47,6 @@ FONT = "Arial"
 # here (not imported from tracker.fields) to avoid a circular import.
 FIELD_TYPES = ("metric", "dimension", "date", "calculated")
 
-# The setup tab's valid Break-out values, offered as a dropdown on scaffold.
-# Kept here for the same reason as FIELD_TYPES (no circular import).
-BREAKOUT_MODES = ("total", "partial")
-
 
 # --- low level request builders -------------------------------------------
 
@@ -428,11 +424,11 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(
             _note(
                 setup_sheet_id, 0, c_breakout,
-                'Dimensions only: "total" adds a break-out table with a row '
-                'per value of this dimension; "partial" adds one with a fixed '
-                'set of rows you pick values into from a dropdown, for a '
-                'dimension with too many values to list. Blank = no break-out '
-                'table. Independent of Show.',
+                "Dimensions only: the number of rows this dimension's "
+                "break-out table gets on every view (e.g. 50). The first N "
+                "values fill it, and every row's label is a dropdown you can "
+                "swap to any other value. Blank = no break-out table. "
+                "Independent of Show.",
             )
         )
         requests.append(
@@ -479,7 +475,9 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                 }
             }
         )
-        # And one down the Break-out column, for the same reason.
+        # The Break-out column holds a row count, so validate for a positive
+        # number rather than offering a list. Strict rejects text at entry;
+        # blank stays allowed (validation never forces a value in).
         requests.append(
             {
                 "setDataValidation": {
@@ -487,13 +485,9 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                         setup_sheet_id, 1, 1000, c_breakout, c_breakout + 1),
                     "rule": {
                         "condition": {
-                            "type": "ONE_OF_LIST",
-                            "values": [
-                                {"userEnteredValue": v}
-                                for v in BREAKOUT_MODES
-                            ],
+                            "type": "NUMBER_GREATER",
+                            "values": [{"userEnteredValue": "0"}],
                         },
-                        "showCustomUi": True,
                         "strict": True,
                     },
                 }

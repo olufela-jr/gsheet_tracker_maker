@@ -354,6 +354,8 @@ class TestBuildView:
         assert client._find_write(client.raw_writes, "A7") == [["Totals", "Spend"]]
 
     def test_breakout_table_rendered(self):
+        # The legacy checkbox: TRUE reads as the default cap, so a tracker
+        # built before the column held a number renders unchanged.
         client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="TRUE")
         result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         assert result["breakouts"] == ["Region"]
@@ -361,6 +363,16 @@ class TestBuildView:
         assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
         # Its values come from the Mapping tab.
         assert client._has_raw([["North"], ["South"]])
+        # And its label rows are swappable: a dropdown sourced below the
+        # sentinel row covers them.
+        assert any(
+            "3:" in str(r["setDataValidation"]["rule"]["condition"]["values"])
+            for batch in client.batch_updates
+            for r in batch
+            if "setDataValidation" in r
+            and r["setDataValidation"].get("rule", {}).get(
+                "condition", {}).get("type") == "ONE_OF_RANGE"
+        )
         # A break-out cell pins the dimension to the row's value label and is
         # bounded by the tab's date pickers (blank picker = unbounded side).
         breakout = [
@@ -373,91 +385,68 @@ class TestBuildView:
         assert 'Day, "<"&IF($D$3="",9.9E+307,$D$3+1)' in cell
 
 
-class TestPartialBreakout:
-    """A partial break-out: fixed rows the user picks values into."""
+class TestBreakoutCap:
+    """A break-out gets the rows its Setup cap asks for, labels swappable."""
 
-    def _built(self):
-        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="partial")
+    def _built(self, cap):
+        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout=cap)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         return client
 
-    def _dropdowns(self, client):
-        return [
+    def _pickers(self, client):
+        """The label-column swap dropdowns.
+
+        They are the only ONE_OF_RANGE rules sourced from Mapping row 3 —
+        slicers and date dropdowns all start at row 2 (the sentinel row).
+        """
+        rules = [
             r["setDataValidation"] for batch in client.batch_updates
             for r in batch
             if "setDataValidation" in r
             and r["setDataValidation"].get("rule", {}).get(
                 "condition", {}).get("type") == "ONE_OF_RANGE"
         ]
-
-    def _block(self, client):
-        """The break-out's formula write: 30 rows starting in column B."""
-        writes = [
-            w for w in client.formula_writes
-            if w["range"].split("!")[-1].startswith("B")
-            and len(w["values"]) == 30
+        return [
+            r for r in rules
+            if "3:" in r["rule"]["condition"]["values"][0]["userEnteredValue"]
         ]
-        assert len(writes) == 1
-        return writes[0]
 
-    def test_the_title_says_how_many_rows_there_are_to_pick(self):
-        assert self._built()._has_raw([["By Region  (pick up to 30)"]])
-
-    def test_the_label_column_is_left_empty(self):
-        client = self._built()
-        # The header still names the dimension, but the rows below it are the
-        # user's to fill: nothing is auto-populated from Mapping.
-        assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
+    def test_a_cap_below_the_value_count_truncates_and_says_so(self):
+        client = self._built("1")
+        assert client._has_raw([["By Region  (first 1 of 2)"]])
+        # Only the first Mapping value is pre-filled.
+        assert client._has_raw([["North"]])
         assert not client._has_raw([["North"], ["South"]])
 
-    def _picker(self, client):
-        """The break-out's label-column dropdown, the only 30-row-tall one.
+    def test_a_cap_above_the_value_count_lists_everything(self):
+        client = self._built("30")
+        # No truncation, so no suffix on the title.
+        assert client._has_raw([["By Region"]])
+        assert client._has_raw([["North"], ["South"]])
 
-        Column A also carries the compare block's From cells, so height is
-        what identifies this rule, not position.
-        """
-        rules = [
-            d for d in self._dropdowns(client)
-            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
-        ]
-        assert len(rules) == 1
-        return rules[0]
-
-    def test_rows_use_the_same_formula_a_total_breakout_does(self):
-        # A partial row is a total row whose label the reader supplies, so the
-        # cell is the plain date-scoped SUMIFS with nothing wrapped round it.
-        block = self._block(self._built())
-        rows = block["values"]
-        assert block["range"].endswith("B26")
-        assert len(rows) == 30
-        spend = rows[0][0]
-        assert spend.startswith("=SUMIFS(Spend, Region, A26,")
-        assert 'Day, ">="&IF($B$3="",0,$B$3)' in spend
-        # A calculated metric still just divides its sibling cells.
-        assert rows[0][2] == '=IFERROR(B26/C26, "")'
-        # The last row is 29 below the first, on its own label cell.
-        assert rows[29][0].startswith("=SUMIFS(Spend, Region, A55,")
-
-    def test_the_label_column_gets_one_dropdown_covering_all_thirty_rows(self):
-        rng = self._picker(self._built())["range"]
+    def test_the_label_column_gets_one_dropdown_covering_its_rows(self):
+        pickers = self._pickers(self._built("30"))
+        assert len(pickers) == 1
+        rng = pickers[0]["range"]
         assert rng["startColumnIndex"] == 0
         assert rng["endColumnIndex"] == 1
-        # Row 26 in A1 terms is index 25, and it runs 30 rows from there.
+        # Row 26 in A1 terms is index 25, and both pre-filled rows are
+        # swappable — the dropdown covers exactly the block's rows.
         assert rng["startRowIndex"] == 25
-        assert rng["endRowIndex"] == 55
+        assert rng["endRowIndex"] == 27
 
-    def test_the_picker_list_skips_the_all_sentinel(self):
-        picker = self._picker(self._built())
+    def test_the_swap_list_skips_the_all_sentinel(self):
+        picker = self._pickers(self._built("30"))[0]
         source = picker["rule"]["condition"]["values"][0]["userEnteredValue"]
         # Mapping row 2 is "**" (meaning "All"); as a row label it would total
         # every row rather than one value, so the list starts at row 3.
         assert source == "='mapping'!A3:A"
 
-    def test_total_and_partial_blocks_stack_in_setup_order(self):
+    def test_capped_blocks_stack_in_setup_order(self):
         setup = [
             ["Day", "date", "", "", "", ""],
-            ["Region", "dimension", "", "", "TRUE", "total"],
-            ["Campaign", "dimension", "", "", "", "partial"],
+            ["Region", "dimension", "", "", "TRUE", "50"],
+            ["Campaign", "dimension", "", "", "", "1"],
             ["Spend", "metric", "", "currency", "", ""],
         ]
         mapping = [
@@ -476,24 +465,24 @@ class TestPartialBreakout:
         result = build_view(
             client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         assert result["breakouts"] == ["Region", "Campaign"]
-        # The total block lists its Mapping values; the partial one names how
-        # many rows there are to pick and leaves them blank.
+        # Region's cap fits everything; Campaign's truncates at one row.
         assert client._has_raw([["By Region"]])
         assert client._has_raw([["North"], ["South"]])
-        assert client._has_raw([["By Campaign  (pick up to 30)"]])
+        assert client._has_raw([["By Campaign  (first 1 of 2)"]])
+        assert client._has_raw([["Alpha"]])
         assert not client._has_raw([["Alpha"], ["Beta"]])
-        # Only the partial block gets a picker, sourced from Campaign's
-        # Mapping column (B, the second mapping dimension).
-        pickers = [
-            d for d in self._dropdowns(client)
-            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
+        # Each block gets its own swap dropdown, sourced from its own Mapping
+        # column, and Campaign's sits below Region's.
+        pickers = self._pickers(client)
+        sources = [
+            p["rule"]["condition"]["values"][0]["userEnteredValue"]
+            for p in pickers
         ]
-        assert len(pickers) == 1
-        assert (pickers[0]["rule"]["condition"]["values"][0]["userEnteredValue"]
-                == "='mapping'!B3:B")
-        # Campaign is below Region, so its rows start after the total block's
-        # two values plus the title, header and the two-row gap.
-        assert pickers[0]["range"]["startRowIndex"] > 25
+        assert sources == ["='mapping'!A3:A", "='mapping'!B3:B"]
+        region, campaign = pickers
+        assert region["range"]["endRowIndex"] - region["range"]["startRowIndex"] == 2
+        assert campaign["range"]["endRowIndex"] - campaign["range"]["startRowIndex"] == 1
+        assert campaign["range"]["startRowIndex"] > region["range"]["endRowIndex"]
 
 
 class TestBuildViews:
