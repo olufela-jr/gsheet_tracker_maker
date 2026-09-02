@@ -164,6 +164,29 @@ class TestBuildView:
         assert matrix[0][0].startswith('=IF(A16="","",SUMIFS(Spend')
         assert "EOMONTH(A16,0)" in matrix[0][0]
 
+    def test_matrix_totals_row_sums_the_period_rows(self):
+        client = _client(DEFAULT_CONFIG.monthly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        # A Total row right under the 12 period rows (16-27): plain metrics
+        # SUM their column; the calculated CPC divides the totals themselves.
+        total = client._find_write(client.formula_writes, "A28")
+        assert total == [[
+            "Total",
+            "=SUM(B16:B27)",
+            "=SUM(C16:C27)",
+            '=IFERROR(B28/C28, "")',
+        ]]
+
+    def test_chart_stops_above_the_totals_row(self):
+        client = _client(DEFAULT_CONFIG.monthly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        added = [r for batch in client.batch_updates for r in batch if "addChart" in r]
+        domain = added[0]["addChart"]["chart"]["spec"]["basicChart"][
+            "domains"][0]["domain"]["sourceRange"]["sources"][0]
+        # Half-open end at index 27 = A1 row 27, the last period row; the
+        # Total row (28) stays out of the trend line.
+        assert domain["endRowIndex"] == 27
+
     def test_monthly_year_dropdown_sources_available_years(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
@@ -401,6 +424,20 @@ class TestBuildView:
         )
 
 
+    def test_breakout_totals_row_sums_the_visible_rows(self):
+        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="TRUE")
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        # The break-out's value rows sit at 27-28 (weekly matrix ends at its
+        # Total row 22); the block's own Total row sums exactly those cells.
+        total = client._find_write(client.formula_writes, "A29")
+        assert total == [[
+            "Total",
+            "=SUM(B27:B28)",
+            "=SUM(C27:C28)",
+            '=IFERROR(B29/C29, "")',
+        ]]
+
+
 class TestBreakoutCap:
     """A break-out gets the rows its Setup cap asks for, labels swappable."""
 
@@ -446,10 +483,11 @@ class TestBreakoutCap:
         rng = pickers[0]["range"]
         assert rng["startColumnIndex"] == 0
         assert rng["endColumnIndex"] == 1
-        # Row 26 in A1 terms is index 25, and both pre-filled rows are
-        # swappable — the dropdown covers exactly the block's rows.
-        assert rng["startRowIndex"] == 25
-        assert rng["endRowIndex"] == 27
+        # Row 27 in A1 terms is index 26, and both pre-filled rows are
+        # swappable — the dropdown covers exactly the block's value rows,
+        # leaving the Total row below them fixed.
+        assert rng["startRowIndex"] == 26
+        assert rng["endRowIndex"] == 28
 
     def test_the_swap_list_skips_the_all_sentinel(self):
         picker = self._pickers(self._built("30"))[0]
@@ -457,6 +495,42 @@ class TestBreakoutCap:
         # Mapping row 2 is "**" (meaning "All"); as a row label it would total
         # every row rather than one value, so the list starts at row 3.
         assert source == "='mapping'!A3:A"
+
+    def test_a_capped_totals_row_sums_only_the_visible_rows(self):
+        client = self._built("1")
+        # One visible row, so the Total covers that single cell — the column
+        # always adds up visually, even when the title says rows were cut.
+        total = client._find_write(client.formula_writes, "A28")
+        assert total == [[
+            "Total",
+            "=SUM(B27:B27)",
+            "=SUM(C27:C27)",
+            '=IFERROR(B28/C28, "")',
+        ]]
+
+    def test_an_empty_breakout_gets_no_totals_row(self):
+        # A broken-out dimension whose Mapping column has no values yet: the
+        # block renders title + header only, so no Total row either. The one
+        # "Total" write left is the period matrix's.
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "TRUE"],
+            ["Spend", "metric", "", "currency", "", ""],
+        ]
+        mapping = [["Region"], ["**"]]
+        client = FakeClient(
+            setup,
+            ["Day", "Region", "Spend"],
+            [date_to_serial(date(2025, 8, 4))],
+            {"setup": 1, "data_source": 2, DEFAULT_CONFIG.weekly_tab: 3},
+            mapping_rows=mapping,
+        )
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        totals = [
+            w for w in client.formula_writes
+            if w["values"] and w["values"][0] and w["values"][0][0] == "Total"
+        ]
+        assert len(totals) == 1
 
     def test_capped_blocks_stack_in_setup_order(self):
         setup = [

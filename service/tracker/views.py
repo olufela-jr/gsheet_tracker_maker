@@ -7,8 +7,9 @@ KPI strip of slicer-filtered grand totals; on the weekly and monthly views
 the comparison block (two From/To date ranges side by side with the
 per-metric totals for each and a % change row underneath, filtered by the
 slicers); the by-period block; then one break-out block per flagged
-dimension (totals per value, scoped to the date controls). The monthly view
-also gets a line chart.
+dimension (totals per value, scoped to the date controls). The by-period
+and break-out blocks each end in a Total row summing the rows shown. The
+monthly view also gets a line chart.
 
 The matrix's period column is a rolling TODAY-anchored window, oldest
 first: daily shows the last 14 days ending yesterday, weekly the last 6
@@ -74,6 +75,7 @@ from .formulas import (
     breakout_formula,
     bucket_formula,
     calc_cell_formula,
+    column_total_formula,
     grand_total_formula,
     number_format_pattern,
     period_next_formula,
@@ -342,6 +344,26 @@ def _metric_cell_of(v, first_col, row):
     )
 
 
+def _add_totals_row(page, v, total_row, first_data):
+    """One 'Total' row under a block's data rows: label + per-metric SUM.
+
+    Sums exactly the rows shown (a capped break-out totals its visible rows,
+    not the whole dimension). Calc metrics are never summed down a column —
+    they recompute from the totals row's own sibling cells, like every other
+    row does.
+    """
+    cell_of = _metric_cell_of(v, 2, total_row)
+    page.write_formulas("A{}".format(total_row), [
+        ["Total"] + [
+            calc_cell_formula(m.formula, cell_of) if is_calculated(m)
+            else column_total_formula(column_to_letter(2 + i), first_data,
+                                      total_row - 1)
+            for i, m in enumerate(v.metric_fields)
+        ]
+    ])
+    page.fmt.append(theme.kpi_values(page.sheet_id, total_row - 1, 0, v.kpi_last_col))
+
+
 def _add_kpi_strip(page, v, dim_specs):
     """Dimension-filtered grand totals, one per metric (no date bucket)."""
     if not v.has_metrics:
@@ -440,6 +462,7 @@ def _add_period_matrix(page, v, dim_specs):
     cell and each row below one period past the one above. It ignores the
     date controls (those scope the break-out tables). Only monthly can have
     blank rows (months past TODAY), so only its metric cells are guarded.
+    A Total row under the matrix sums each metric column's period rows.
 
     Returns (header_row, first_data_row) for the chart and the compare-picker
     dropdowns; None when there are no metrics.
@@ -482,12 +505,16 @@ def _add_period_matrix(page, v, dim_specs):
     page.fmt.append(theme.num_format(page.sheet_id, first_data - 1, end, 0, 1, v.date_pattern))
     for i, (is_calc, pattern) in enumerate(v.metrics_meta):
         page.fmt.append(theme.num_format(
-            page.sheet_id, first_data - 1, end, 1 + i, 2 + i, pattern))
+            page.sheet_id, first_data - 1, end + 1, 1 + i, 2 + i, pattern))
         if is_calc:
             page.fmt.append(theme.highlight_col(page.sheet_id, first_data - 1, end, 1 + i))
-    page.fmt.append(theme.outer_border(page.sheet_id, header_row - 1, end, 0, v.kpi_last_col))
+    # The chart keeps reading the period rows only: its half-open end row
+    # (header_row - 1 + num_periods + 1) stops right at the Total row.
+    total_row = first_data + v.num_periods
+    _add_totals_row(page, v, total_row, first_data)
+    page.fmt.append(theme.outer_border(page.sheet_id, header_row - 1, end + 1, 0, v.kpi_last_col))
 
-    page.row = first_data + v.num_periods + 2
+    page.row = total_row + 3
     return header_row, first_data
 
 
@@ -502,7 +529,9 @@ def _add_breakout_tables(page, v, dim_specs, window):
 
     The totals are scoped to the tab's date controls via the hidden window
     cells (see _add_filter_header); a blank control leaves that side of the
-    window open.
+    window open. Each non-empty block ends in a Total row summing the rows
+    shown — when the cap truncates, that is the visible rows' total, not
+    the whole dimension's.
     """
     lower, upper = window_criteria(*window)
     for bd in v.breakouts:
@@ -545,11 +574,12 @@ def _add_breakout_tables(page, v, dim_specs, window):
             for i, (is_calc, pattern) in enumerate(v.metrics_meta):
                 mcol = 1 + i
                 page.fmt.append(theme.num_format(
-                    page.sheet_id, first_data - 1, end, mcol, mcol + 1, pattern))
+                    page.sheet_id, first_data - 1, end + 1, mcol, mcol + 1, pattern))
                 if is_calc:
                     page.fmt.append(theme.highlight_col(page.sheet_id, first_data - 1, end, mcol))
+            _add_totals_row(page, v, first_data + num_rows, first_data)
             page.fmt.append(theme.outer_border(
-                page.sheet_id, header_row - 1, end, 0, v.kpi_last_col))
+                page.sheet_id, header_row - 1, end + 1, 0, v.kpi_last_col))
 
             # A dropdown down the label column so any row can be swapped to
             # another value. Source from Mapping row 3, not row 2: row 2
@@ -560,7 +590,7 @@ def _add_breakout_tables(page, v, dim_specs, window):
             page.validations.append(one_of_range_rows(
                 page.sheet_id, first_data - 1, 0, num_rows, source))
 
-        page.row = first_data + num_rows + 2
+        page.row = first_data + num_rows + (3 if num_rows else 2)
 
 
 def _add_dropdowns(page, v, drop_positions):

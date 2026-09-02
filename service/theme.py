@@ -273,6 +273,17 @@ def num_format(sheet_id, r1, r2, c1, c2, pattern):
     return _num_format(sheet_id, r1, r2, c1, c2, pattern)
 
 
+def num_format_col(sheet_id, r1, c1, c2, pattern):
+    """num_format from row r1 down to the grid bottom (no endRowIndex).
+
+    For columns filled by a live spill formula, whose length a bounded
+    range written at deploy time could not know.
+    """
+    request = _num_format(sheet_id, r1, 0, c1, c2, pattern)
+    request["repeatCell"]["range"].pop("endRowIndex")
+    return request
+
+
 def outer_border(sheet_id, r1, r2, c1, c2):
     return _outer_border(sheet_id, r1, r2, c1, c2)
 

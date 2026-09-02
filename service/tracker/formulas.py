@@ -2,7 +2,7 @@
 
 Everything here turns plain Python values into Sheets formulas (SUMIFS,
 calculated-metric expressions, date-bucket criteria) or normalises raw cell
-values (distinct_values, bucket serials). Nothing touches the API.
+values (bucket serials). Nothing touches the API.
 """
 
 import re
@@ -25,24 +25,37 @@ def formula_tokens(formula):
     return seen
 
 
-def distinct_values(values):
-    """Return sorted, distinct, non-empty values from a flat list.
+def mapping_values_formula(source_range):
+    """The live spill for a Mapping dimension column: sorted distinct values.
 
-    Cell values are coerced to stripped strings. Blanks are dropped. Order is
-    a plain ascending string sort so the Mapping column is stable run to run.
+    Sits in row 3 (under the header and the "**" sentinel) and tracks the
+    Data Source column as data lands, so Mapping never goes stale between
+    deploys. FILTER drops blanks but errors when the column is empty; the
+    bare IFERROR turns that into a blank cell.
     """
-    seen = set()
-    result = []
-    for value in values:
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text == "":
-            continue
-        if text not in seen:
-            seen.add(text)
-            result.append(text)
-    return sorted(result)
+    return '=IFERROR(SORT(UNIQUE(FILTER({r}, {r}<>""))))'.format(r=source_range)
+
+
+def mapping_dates_formula(source_range):
+    """The live spill for Mapping's dates column: distinct days, newest first.
+
+    ISNUMBER keeps only real date serials (blanks and text junk drop out,
+    matching what the old Python bucketing skipped); INT strips any
+    time-of-day so datetimes collapse to their day; SORT descending puts
+    the newest date on top. The bare IFERROR blanks an empty column.
+    """
+    return (
+        '=IFERROR(SORT(UNIQUE(ARRAYFORMULA(INT('
+        'FILTER({r}, ISNUMBER({r}))))), 1, FALSE))'
+    ).format(r=source_range)
+
+
+def mapping_years_formula(source_range):
+    """The live spill for Mapping's Year column: distinct years, newest first."""
+    return (
+        '=IFERROR(SORT(UNIQUE(ARRAYFORMULA(YEAR('
+        'FILTER({r}, ISNUMBER({r}))))), 1, FALSE))'
+    ).format(r=source_range)
 
 
 def sumifs_expr(metric_range, dimensions, sentinel="**"):
@@ -94,24 +107,6 @@ def bucket_serial(serial, granularity):
     if granularity == "month":
         return date_to_serial(date(d.year, d.month, 1))
     raise ValueError("unknown granularity: {}".format(granularity))
-
-
-def distinct_buckets(serials, granularity):
-    """Sorted, distinct bucket-start serials from raw date serials.
-
-    Non-numeric / blank cells are skipped.
-    """
-    seen = set()
-    out = []
-    for value in serials:
-        try:
-            bucket = bucket_serial(value, granularity)
-        except (ValueError, TypeError):
-            continue
-        if bucket not in seen:
-            seen.add(bucket)
-            out.append(bucket)
-    return sorted(out)
 
 
 # --- picker-driven period windows --------------------------------------------
@@ -316,6 +311,16 @@ def grand_total_formula(metric, dim_specs, sentinel):
     calc_cell_formula from the sibling metric cells instead.
     """
     return build_sumifs_formula(sanitise_name(metric.name), dim_specs, sentinel)
+
+
+def column_total_formula(col_letter, first_row, last_row):
+    """SUM down one metric column's data rows, e.g. =SUM(B16:B27).
+
+    Blank guarded cells hold "" (text), which SUM ignores, so the range
+    needs no guard of its own. Calculated fields never reach here: their
+    total is rebuilt by calc_cell_formula from the totals row's own cells.
+    """
+    return "=SUM({c}{a}:{c}{b})".format(c=col_letter, a=first_row, b=last_row)
 
 
 def bucket_formula(metric, date_range, cell, granularity, dim_specs, sentinel):

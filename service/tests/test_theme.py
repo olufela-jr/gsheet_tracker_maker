@@ -48,6 +48,15 @@ class TestPrimitives:
         cell = req["repeatCell"]["cell"]["userEnteredFormat"]["numberFormat"]
         assert cell["pattern"] == "0%"
 
+    def test_num_format_col_is_open_ended(self):
+        req = theme.num_format_col(1, 1, 2, 3, "yyyy-mm-dd")
+        rng = req["repeatCell"]["range"]
+        # No endRowIndex: the format runs to the grid bottom, covering a
+        # live spill whatever length it grows to.
+        assert "endRowIndex" not in rng
+        assert rng["startRowIndex"] == 1
+        assert rng["startColumnIndex"] == 2 and rng["endColumnIndex"] == 3
+
     def test_outer_border_updates_borders(self):
         assert "updateBorders" in theme.outer_border(1, 8, 12, 0, 4)
 

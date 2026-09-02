@@ -12,6 +12,7 @@ from tracker import (
     ValidationError,
     blank_guarded,
     calc_cell_formula,
+    column_total_formula,
     is_calculated,
     label_of,
     labels_of,
@@ -25,8 +26,9 @@ from tracker import (
     date_field_of,
     date_to_serial,
     dimensions_of,
-    distinct_buckets,
-    distinct_values,
+    mapping_dates_formula,
+    mapping_values_formula,
+    mapping_years_formula,
     formula_tokens,
     mapping_dimensions_of,
     period_next_formula,
@@ -91,20 +93,6 @@ class TestBucketing:
     def test_drops_time_component(self):
         s = date_to_serial(date(2025, 8, 19)) + 0.75
         assert bucket_serial(s, "day") == date_to_serial(date(2025, 8, 19))
-
-    def test_distinct_buckets_weekly_and_sorted(self):
-        serials = [
-            date_to_serial(date(2025, 8, 25)),  # Mon week B
-            date_to_serial(date(2025, 8, 19)),  # Tue week A
-            date_to_serial(date(2025, 8, 18)),  # Mon week A
-            "not-a-date",
-        ]
-        buckets = distinct_buckets(serials, "week")
-        assert buckets == [
-            date_to_serial(date(2025, 8, 18)),
-            date_to_serial(date(2025, 8, 25)),
-        ]
-
 
 class TestPeriodWindows:
     PICKERS = ("$B$3", "$D$3")
@@ -213,6 +201,14 @@ class TestSumifsExpr:
 
     def test_build_sumifs_formula_prefixes_equals(self):
         assert build_sumifs_formula("Spend", []) == "=SUM(Spend)"
+
+
+class TestColumnTotalFormula:
+    def test_sums_one_column_over_the_data_rows(self):
+        assert column_total_formula("B", 16, 27) == "=SUM(B16:B27)"
+
+    def test_a_single_row_range_is_valid(self):
+        assert column_total_formula("C", 27, 27) == "=SUM(C27:C27)"
 
 
 class TestBucketSumifsExpr:
@@ -713,24 +709,30 @@ class TestBreakoutColumn:
         assert by_name["Heavy"].mapping is False
 
 
-class TestDistinctValues:
-    def test_sorted_distinct_non_empty(self):
-        values = ["b", "a", "b", "c", "a"]
-        assert distinct_values(values) == ["a", "b", "c"]
+class TestMappingValuesFormula:
+    def test_unique_sorted_spill_over_the_source_column(self):
+        # FILTER drops blanks; the bare IFERROR blanks an empty column
+        # (FILTER errors when nothing matches) instead of showing #N/A.
+        assert mapping_values_formula("'data_source'!B2:B") == (
+            '=IFERROR(SORT(UNIQUE(FILTER('
+            "'data_source'!B2:B, 'data_source'!B2:B<>\"\"))))"
+        )
 
-    def test_drops_blanks_and_whitespace(self):
-        values = ["a", "", "  ", None, "b", "a"]
-        assert distinct_values(values) == ["a", "b"]
+    def test_dates_spill_buckets_to_days_newest_first(self):
+        # ISNUMBER keeps only real serials; INT strips time-of-day so
+        # datetimes collapse to their day; FALSE sorts newest on top.
+        assert mapping_dates_formula("'data_source'!A2:A") == (
+            "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(INT("
+            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "1, FALSE))"
+        )
 
-    def test_strips_surrounding_whitespace(self):
-        # "x " and "x" are the same value once stripped.
-        assert distinct_values([" x ", "x"]) == ["x"]
-
-    def test_coerces_non_strings(self):
-        assert distinct_values([1, 2, 2, 1]) == ["1", "2"]
-
-    def test_empty_input(self):
-        assert distinct_values([]) == []
+    def test_years_spill_newest_first(self):
+        assert mapping_years_formula("'data_source'!A2:A") == (
+            "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(YEAR("
+            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "1, FALSE))"
+        )
 
 
 class TestBuildSumifsFormula:
