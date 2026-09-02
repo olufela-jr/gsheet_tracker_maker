@@ -381,8 +381,24 @@ class TestBuildView:
         ]
         assert breakout
         cell = breakout[0]["values"][0][0]
-        assert 'Day, ">="&IF($B$3="",0,$B$3)' in cell
-        assert 'Day, "<"&IF($D$3="",9.9E+307,$D$3+1)' in cell
+        # The bounds are plain refs to the hidden window cells; the
+        # blank-picker handling lives in those cells, not here.
+        assert 'Day, ">="&$K$3' in cell
+        assert 'Day, "<"&$L$3' in cell
+        # The window cells themselves resolve the pickers, and their columns
+        # are hidden from readers.
+        assert client._find_write(client.formula_writes, "K3") == [
+            ['=IF($B$3="",0,$B$3)', '=IF($D$3="",9.9E+307,$D$3+1)']
+        ]
+        hidden = [
+            r["updateDimensionProperties"] for batch in client.batch_updates
+            for r in batch if "updateDimensionProperties" in r
+        ]
+        assert any(
+            h["range"]["startIndex"] == 10 and h["range"]["endIndex"] == 12
+            and h["properties"] == {"hiddenByUser": True}
+            for h in hidden
+        )
 
 
 class TestBreakoutCap:

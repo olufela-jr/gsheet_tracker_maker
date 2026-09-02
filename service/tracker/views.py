@@ -79,8 +79,9 @@ from .formulas import (
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
-    picker_window_criteria,
     range_guarded,
+    window_cell_formulas,
+    window_criteria,
 )
 from .scaffold import ensure_tab
 
@@ -180,7 +181,7 @@ def _view_inputs(client, cfg, tab, granularity, fields, headers,
         date_pattern=MONTH_FORMAT if granularity == "month" else DATE_FORMAT,
         kpi_last_col=kpi_last_col,
         # Wide enough for the header's stat cells (columns I:J).
-        end_col=max(kpi_last_col, compare_last_col, _STAT_COL + 2),
+        end_col=max(kpi_last_col, compare_last_col, _WINDOW_COL + 2),
     )
 
 
@@ -197,6 +198,12 @@ PAIRS_PER_ROW = 4
 # 0-based column of the live stat labels, right of the widest pairs grid.
 _STAT_COL = PAIRS_PER_ROW * 2
 
+# 0-based column of the two hidden window cells, right of the stat cells.
+# They resolve the tab's date controls into a plain lower/upper bound pair
+# (blank control = unbounded side) so every break-out SUMIFS references a
+# cell instead of repeating that IF; the columns are hidden from readers.
+_WINDOW_COL = _STAT_COL + 2
+
 
 def _add_filter_header(page, v):
     """The header: date controls, slicer pairs grid, and live stat cells.
@@ -208,11 +215,16 @@ def _add_filter_header(page, v):
     The Today and days-left-in-month stats sit to the right at a fixed
     column (the days-left label is itself a live formula).
 
-    Returns (dim_specs, drop_positions, pickers): the
+    The date controls also resolve into two hidden window cells (lower and
+    exclusive upper bound, blank control = unbounded side), so the break-out
+    SUMIFS reference a plain cell each instead of repeating the blank
+    handling inline.
+
+    Returns (dim_specs, drop_positions, window): the
     (named_range, dropdown_cell) pair per dimension that every SUMIFS
     filters by, each dropdown's 0-based (row, col) for the validation
-    wiring, and the date-control ref(s) the break-out tables filter by — a
-    (from, to) pair, or the year cell.
+    wiring, and the (lower, upper) window cell refs the break-out tables
+    bound their dates by.
     """
     first_row = page.row
     dates_row = first_row
@@ -302,8 +314,19 @@ def _add_filter_header(page, v):
     page.fmt.append(theme.outer_border(
         page.sheet_id, first_row - 1, first_row + 1, _STAT_COL, _STAT_COL + 2))
 
+    # The hidden window cells, resolving the date controls once per tab.
+    lo, hi = window_cell_formulas(v.granularity, pickers)
+    window_ref = "{}{}".format(column_to_letter(_WINDOW_COL + 1), dates_row)
+    page.write_formulas(window_ref, [[lo, hi]])
+    page.fmt.append(theme.hide_columns(
+        page.sheet_id, _WINDOW_COL, _WINDOW_COL + 2))
+    window = (
+        "${}${}".format(column_to_letter(_WINDOW_COL + 1), dates_row),
+        "${}${}".format(column_to_letter(_WINDOW_COL + 2), dates_row),
+    )
+
     page.row = first_row + max(1 + grid_rows, 2) + 1
-    return dim_specs, drop_positions, pickers
+    return dim_specs, drop_positions, window
 
 
 def _metric_cell_of(v, first_col, row):
@@ -468,7 +491,7 @@ def _add_period_matrix(page, v, dim_specs):
     return header_row, first_data
 
 
-def _add_breakout_tables(page, v, dim_specs, pickers):
+def _add_breakout_tables(page, v, dim_specs, window):
     """One break-out block per broken-out dimension, stacked in Setup order.
 
     A block gets the number of rows its Setup cap asks for (fewer when the
@@ -477,10 +500,11 @@ def _add_breakout_tables(page, v, dim_specs, pickers):
     label cell carries a dropdown of the dimension's values, so the reader can
     swap any row to a value the alphabetical head of the list left out.
 
-    The totals are scoped to the tab's date controls (the pickers at the top
-    of the sheet); a blank picker cell leaves that side of the window open.
+    The totals are scoped to the tab's date controls via the hidden window
+    cells (see _add_filter_header); a blank control leaves that side of the
+    window open.
     """
-    lower, upper = picker_window_criteria(v.granularity, pickers)
+    lower, upper = window_criteria(*window)
     for bd in v.breakouts:
         cap = v.breakout_caps.get(bd, DEFAULT_BREAKOUT_CAP)
         all_vals = v.breakout_values.get(bd, [])
@@ -564,11 +588,11 @@ def build_view(client, cfg, tab, granularity, fields=None, headers=None,
     page = Page(tab, sheet_id)
 
     _add_title(page, v)
-    dim_specs, drop_positions, pickers = _add_filter_header(page, v)
+    dim_specs, drop_positions, window = _add_filter_header(page, v)
     _add_kpi_strip(page, v, dim_specs)
     _add_compare_block(page, v, dim_specs)
     matrix = _add_period_matrix(page, v, dim_specs)
-    _add_breakout_tables(page, v, dim_specs, pickers)
+    _add_breakout_tables(page, v, dim_specs, window)
     _add_dropdowns(page, v, drop_positions)
 
     end_row = page.row

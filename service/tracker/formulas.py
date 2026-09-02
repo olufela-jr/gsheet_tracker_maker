@@ -128,7 +128,7 @@ PERIOD_ROWS = {"day": 14, "week": 6, "month": 12}
 def picker_default_formulas(granularity):
     """Default formulas for a view's date controls.
 
-    The controls scope the break-out tables (see picker_window_criteria).
+    The controls scope the break-out tables (see window_cell_formulas).
     Yesterday is the newest reference day everywhere (today's data is
     usually partial): weekly returns a (from, to) pair ending yesterday;
     monthly returns yesterday's calendar year. Daily has no defaults: its
@@ -176,28 +176,34 @@ def period_next_formula(granularity, cell):
     raise ValueError("unknown granularity: {}".format(granularity))
 
 
-def picker_window_criteria(granularity, picker):
-    """SUMIFS criteria pair (lower, upper) for the tab's picked date window.
+def window_cell_formulas(granularity, picker):
+    """The two window-cell formulas resolving the tab's date controls.
 
     `picker` is the (from, to) cell-ref pair for day/week, or the year cell
-    ref for month. A blank picker cell leaves that side unbounded (0 below,
-    a number past any date serial above), so a tab with blank date controls
-    still totals all data instead of erroring. Upper bounds are exclusive
-    ("<" of the next day/year) so date-time values on the last day are still
-    included.
+    ref for month. The pair of hidden window cells absorbs the blank-control
+    handling once per tab: a blank control leaves that side unbounded (0
+    below, a number past any date serial above), and the upper cell holds
+    the exclusive bound (the next day/year) so date-time values on the last
+    day still count. Every break-out SUMIFS then references a plain bound
+    instead of repeating the IF in each cell.
     """
     if granularity in ("day", "week"):
         f, t = picker
         return (
-            '">="&IF({f}="",0,{f})'.format(f=f),
-            '"<"&IF({t}="",9.9E+307,{t}+1)'.format(t=t),
+            '=IF({f}="",0,{f})'.format(f=f),
+            '=IF({t}="",9.9E+307,{t}+1)'.format(t=t),
         )
     if granularity == "month":
         return (
-            '">="&IF({y}="",0,DATE({y},1,1))'.format(y=picker),
-            '"<"&IF({y}="",9.9E+307,DATE({y}+1,1,1))'.format(y=picker),
+            '=IF({y}="",0,DATE({y},1,1))'.format(y=picker),
+            '=IF({y}="",9.9E+307,DATE({y}+1,1,1))'.format(y=picker),
         )
     raise ValueError("unknown granularity: {}".format(granularity))
+
+
+def window_criteria(lo_cell, hi_cell):
+    """SUMIFS criteria pair (lower, upper) bounding dates by the window cells."""
+    return ('">="&{}'.format(lo_cell), '"<"&{}'.format(hi_cell))
 
 
 def range_guarded(formula, from_cell, to_cell):
@@ -329,7 +335,7 @@ def _breakout_expr(metric_range, dim_range, value_cell, date_range, lower,
 
     The break-out dimension is pinned to `value_cell` (the row label), the
     total is bounded by the tab's date controls (lower / upper are full
-    criteria strings, see picker_window_criteria), and the other shown
+    criteria strings, see window_criteria), and the other shown
     dimensions are still filtered by their dropdowns.
     """
     parts = [metric_range, dim_range, value_cell,

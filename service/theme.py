@@ -285,6 +285,22 @@ def row_height(sheet_id, row, px):
     return _row_height(sheet_id, row, px)
 
 
+def hide_columns(sheet_id, c1, c2):
+    """Hide columns [c1, c2): helper cells readers should not see."""
+    return {
+        "updateDimensionProperties": {
+            "range": {
+                "sheetId": sheet_id,
+                "dimension": "COLUMNS",
+                "startIndex": c1,
+                "endIndex": c2,
+            },
+            "properties": {"hiddenByUser": True},
+            "fields": "hiddenByUser",
+        }
+    }
+
+
 def line_chart_request(sheet_id, metric_cols, header_row_index, end_row_index,
                        anchor_col, title="Trend", domain_col=0, anchor_row=None):
     """An addChart request: a line per series column over a domain column.

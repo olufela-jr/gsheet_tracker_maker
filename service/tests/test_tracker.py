@@ -32,7 +32,8 @@ from tracker import (
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
-    picker_window_criteria,
+    window_cell_formulas,
+    window_criteria,
     range_guarded,
     read_setup,
     setup_columns,
@@ -144,20 +145,26 @@ class TestPeriodWindows:
         with pytest.raises(ValueError):
             period_next_formula("year", "A2")
         with pytest.raises(ValueError):
-            picker_window_criteria("year", self.PICKERS)
+            window_cell_formulas("year", self.PICKERS)
 
-    def test_picker_window_leaves_blank_sides_unbounded(self):
-        # The break-out tables' date bounds: a blank picker cell must not
-        # error the SUMIFS, it opens that side of the window instead.
-        lower, upper = picker_window_criteria("week", self.PICKERS)
-        assert lower == '">="&IF($B$3="",0,$B$3)'
-        assert upper == '"<"&IF($D$3="",9.9E+307,$D$3+1)'
-        assert picker_window_criteria("day", self.PICKERS) == (lower, upper)
+    def test_window_cells_leave_blank_sides_unbounded(self):
+        # The hidden window cells absorb the blank-control handling once per
+        # tab: a blank picker opens that side of the window instead of
+        # erroring the SUMIFS that reference the cells.
+        lo, hi = window_cell_formulas("week", self.PICKERS)
+        assert lo == '=IF($B$3="",0,$B$3)'
+        assert hi == '=IF($D$3="",9.9E+307,$D$3+1)'
+        assert window_cell_formulas("day", self.PICKERS) == (lo, hi)
 
-    def test_picker_window_month_covers_the_picked_year(self):
-        lower, upper = picker_window_criteria("month", "$B$3")
-        assert lower == '">="&IF($B$3="",0,DATE($B$3,1,1))'
-        assert upper == '"<"&IF($B$3="",9.9E+307,DATE($B$3+1,1,1))'
+    def test_window_cells_month_covers_the_picked_year(self):
+        lo, hi = window_cell_formulas("month", "$B$3")
+        assert lo == '=IF($B$3="",0,DATE($B$3,1,1))'
+        assert hi == '=IF($B$3="",9.9E+307,DATE($B$3+1,1,1))'
+
+    def test_window_criteria_reference_the_cells_plainly(self):
+        # The complexity lives in the window cells, so the criteria the
+        # SUMIFS carry are just a comparator and a cell ref.
+        assert window_criteria("$K$3", "$L$3") == ('">="&$K$3', '"<"&$L$3')
 
     def test_blank_guarded_wraps_a_formula(self):
         assert blank_guarded("=SUM(B:B)", "A5") == '=IF(A5="","",SUM(B:B))'
