@@ -117,8 +117,13 @@ function serviceErrorText_(parsed) {
     return 'no response';
   }
   let message = parsed.message || 'error';
-  if (parsed.detail && parsed.detail.errors && parsed.detail.errors.length) {
-    message += ' - ' + parsed.detail.errors.join('; ');
+  const detail = parsed.detail || {};
+  if (detail.errors && detail.errors.length) {
+    message += ' - ' + detail.errors.join('; ');
+  } else if (detail.error) {
+    // A failure that carries a single raw cause rather than a list. Without
+    // this the status line shows only the generic message and the cause is lost.
+    message += ' - ' + detail.error;
   }
   return message;
 }
