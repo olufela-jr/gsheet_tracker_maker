@@ -47,10 +47,6 @@ FONT = "Arial"
 # here (not imported from tracker.fields) to avoid a circular import.
 FIELD_TYPES = ("metric", "dimension", "date", "calculated")
 
-# The setup tab's valid Break-out values, offered as a dropdown on scaffold.
-# Kept here for the same reason as FIELD_TYPES (no circular import).
-BREAKOUT_MODES = ("total", "partial")
-
 
 # --- low level request builders -------------------------------------------
 
@@ -277,6 +273,17 @@ def num_format(sheet_id, r1, r2, c1, c2, pattern):
     return _num_format(sheet_id, r1, r2, c1, c2, pattern)
 
 
+def num_format_col(sheet_id, r1, c1, c2, pattern):
+    """num_format from row r1 down to the grid bottom (no endRowIndex).
+
+    For columns filled by a live spill formula, whose length a bounded
+    range written at deploy time could not know.
+    """
+    request = _num_format(sheet_id, r1, 0, c1, c2, pattern)
+    request["repeatCell"]["range"].pop("endRowIndex")
+    return request
+
+
 def outer_border(sheet_id, r1, r2, c1, c2):
     return _outer_border(sheet_id, r1, r2, c1, c2)
 
@@ -287,6 +294,22 @@ def col_width(sheet_id, start, end, px):
 
 def row_height(sheet_id, row, px):
     return _row_height(sheet_id, row, px)
+
+
+def hide_columns(sheet_id, c1, c2):
+    """Hide columns [c1, c2): helper cells readers should not see."""
+    return {
+        "updateDimensionProperties": {
+            "range": {
+                "sheetId": sheet_id,
+                "dimension": "COLUMNS",
+                "startIndex": c1,
+                "endIndex": c2,
+            },
+            "properties": {"hiddenByUser": True},
+            "fields": "hiddenByUser",
+        }
+    }
 
 
 def line_chart_request(sheet_id, metric_cols, header_row_index, end_row_index,
@@ -428,11 +451,11 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
         requests.append(
             _note(
                 setup_sheet_id, 0, c_breakout,
-                'Dimensions only: "total" adds a break-out table with a row '
-                'per value of this dimension; "partial" adds one with a fixed '
-                'set of rows you pick values into from a dropdown, for a '
-                'dimension with too many values to list. Blank = no break-out '
-                'table. Independent of Show.',
+                "Dimensions only: the number of rows this dimension's "
+                "break-out table gets on every view (e.g. 50). The first N "
+                "values fill it, and every row's label is a dropdown you can "
+                "swap to any other value. Blank = no break-out table. "
+                "Independent of Show.",
             )
         )
         requests.append(
@@ -479,7 +502,9 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                 }
             }
         )
-        # And one down the Break-out column, for the same reason.
+        # The Break-out column holds a row count, so validate for a positive
+        # number rather than offering a list. Strict rejects text at entry;
+        # blank stays allowed (validation never forces a value in).
         requests.append(
             {
                 "setDataValidation": {
@@ -487,13 +512,9 @@ def input_tab_format_requests(setup_sheet_id, data_source_sheet_id):
                         setup_sheet_id, 1, 1000, c_breakout, c_breakout + 1),
                     "rule": {
                         "condition": {
-                            "type": "ONE_OF_LIST",
-                            "values": [
-                                {"userEnteredValue": v}
-                                for v in BREAKOUT_MODES
-                            ],
+                            "type": "NUMBER_GREATER",
+                            "values": [{"userEnteredValue": "0"}],
                         },
-                        "showCustomUi": True,
                         "strict": True,
                     },
                 }

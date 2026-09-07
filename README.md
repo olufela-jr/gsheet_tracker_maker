@@ -51,11 +51,11 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   expression for a calculated metric, for example `[Spend]/[Clicks]`),
   **Format** (a number-format hint: `currency`, `percent`, `number`), the
   per-dimension **Show in views** checkbox, the per-dimension **Break-out
-  table** mode (`total`, `partial`, or blank), and the per-dimension
+  table** row count (a number, or blank for none), and the per-dimension
   **Mapping** checkbox. Only dimensions with Show checked become filter
   dropdowns; an unchecked dimension stays in the data but is hidden (metrics
-  aggregate over all its values). A dimension with a break-out mode gets its
-  own block on every view; Show and Break-out are independent. Raw fields must
+  aggregate over all its values). A dimension with a break-out row count gets
+  its own block on every view; Show and Break-out are independent. Raw fields must
   match a data_source header exactly; calculated fields need not. Metrics and
   dimensions render in Setup row order, so a calculated metric placed between
   two raw ones appears between them. Row 1 is the header row, and the columns
@@ -78,20 +78,16 @@ inputs the user fills in (`setup`, `data_source`); the rest are generated
   matrix (one row per date bucket, one column per metric; calculated-metric
   columns tinted periwinkle). Weekly and monthly also carry a **compare block**
   (two period pickers showing each metric's A, B, and % change) and a **% change
-  column** beside each metric in the matrix. Below that, each dimension flagged
-  for break-out gets a **break-out block**, in one of two shapes. A `total`
-  break-out lists a row per value of the dimension, capped at 50 with the cap
-  shown in the title - note the cap takes the *first* 50 in mapping's
-  alphabetical order, not the top 50 by any metric. A `partial` break-out is 30
-  rows whose labels are blank cells carrying a dropdown of that dimension's
-  values (the `**` sentinel excluded): the reader picks which values the block
-  covers. Use it for a dimension whose interesting values are not the
-  alphabetically first ones - campaigns, mostly. A row whose label has not been
-  picked yet reads as zero rather than blank: its cells are the same SUMIFS a
-  `total` break-out writes, just pointed at an empty label cell, so a freshly
-  built block shows 30 zero rows until they are filled in. The picks are not
-  preserved across a rebuild; a refresh blanks them. The monthly view also
-  carries a line chart of every metric over time.
+  column** beside each metric in the matrix. Below that, each dimension with a
+  break-out row count gets a **break-out block** of that many rows (clamped at
+  200), pre-filled with the dimension's first values in mapping's alphabetical
+  order; when the count truncates, the title says so (`By Campaign  (first 30
+  of 4,000)`). Every row's label is a dropdown of the dimension's values (the
+  `**` sentinel excluded), so the reader can swap any row to a value the
+  alphabetical head of the list left out - campaign names, mostly. Swaps are
+  not preserved across a rebuild; a refresh restores the alphabetical
+  defaults. The monthly view also carries a line chart of every metric over
+  time.
 - **comparison** (generated) is a split-screen A/B tab. Each side has a dropdown
   per shown dimension and its own Date from / Date to, so you can compare two
   campaigns (or channels, regions, ...) over the same or different ranges. A

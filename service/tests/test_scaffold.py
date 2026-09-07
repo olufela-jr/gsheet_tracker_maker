@@ -101,7 +101,7 @@ class TestScaffold:
 
 
 class TestGenerateMapping:
-    def test_mapping_carries_the_available_dates(self):
+    def _client(self):
         setup = [
             ["Day", "date", "", "", "", ""],
             ["Region", "dimension", "", "", "TRUE", ""],
@@ -115,27 +115,46 @@ class TestGenerateMapping:
             date_to_serial(date(2025, 8, 5)),  # duplicate day
         ]
         tabs = {"setup": 1, "data_source": 2, DEFAULT_CONFIG.mapping_tab: 3}
-        client = FakeClient(setup, headers, serials, tabs)
+        return FakeClient(setup, headers, serials, tabs)
+
+    def test_dimension_columns_spill_live_unique_values(self):
+        client = self._client()
+        generate_mapping(client, DEFAULT_CONFIG)
+        # A dimension column hardcodes only its header and the "**" sentinel;
+        # the values under them are a live UNIQUE over the Data Source column,
+        # so Mapping tracks new values without a redeploy.
+        assert client._find_write(client.raw_writes, "A1") == [["Region"], ["**"]]
+        assert client._find_write(client.formula_writes, "A3") == [[
+            '=IFERROR(SORT(UNIQUE(FILTER('
+            "'data_source'!B2:B, 'data_source'!B2:B<>\"\"))))"
+        ]]
+
+    def test_mapping_carries_the_available_dates(self):
+        client = self._client()
         result = generate_mapping(client, DEFAULT_CONFIG)
         assert result["columns"] == 1  # Region
-        assert result["dates"] == 3
-        assert result["years"] == 1
+        assert result["has_dates"] is True
 
-        # The date column sits after the dimension columns: header row 1,
-        # then the distinct day serials newest first, no sentinel.
-        dates_col = client._find_write(client.raw_writes, "B1")
-        assert dates_col == [
-            ["Day"],
-            [date_to_serial(date(2025, 9, 1))],
-            [date_to_serial(date(2025, 8, 5))],
-            [date_to_serial(date(2025, 8, 4))],
-        ]
+        # The date and Year columns sit after the dimension columns: header
+        # row 1, then a live spill from row 2, no sentinel. INT collapses
+        # datetimes to their day; YEAR to their year; descending sort puts
+        # the newest on top.
+        assert client._find_write(client.raw_writes, "B1") == [["Day"]]
+        assert client._find_write(client.raw_writes, "C1") == [["Year"]]
+        assert client._find_write(client.formula_writes, "B2") == [[
+            "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(INT("
+            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "1, FALSE))"
+        ]]
+        assert client._find_write(client.formula_writes, "C2") == [[
+            "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(YEAR("
+            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "1, FALSE))"
+        ]]
 
-        # The years column follows: the distinct years of those dates.
-        years_col = client._find_write(client.raw_writes, "C1")
-        assert years_col == [["Year"], [2025]]
-
-        # The serials are formatted as dates.
+        # The date column is formatted as dates, open-ended: the spill's
+        # length changes with the data, so the format runs to the grid
+        # bottom rather than a row count known at deploy time.
         fmts = [
             r["repeatCell"] for batch in client.batch_updates
             for r in batch if "repeatCell" in r
@@ -146,7 +165,7 @@ class TestGenerateMapping:
             and f["range"]["startColumnIndex"] == 1
         ]
         assert len(date_fmt) == 1
-        assert date_fmt[0]["range"]["endRowIndex"] == 4  # header + 3 dates
+        assert "endRowIndex" not in date_fmt[0]["range"]
 
 
 class FakeGrid:

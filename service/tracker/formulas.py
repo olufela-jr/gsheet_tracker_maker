@@ -2,7 +2,7 @@
 
 Everything here turns plain Python values into Sheets formulas (SUMIFS,
 calculated-metric expressions, date-bucket criteria) or normalises raw cell
-values (distinct_values, bucket serials). Nothing touches the API.
+values (bucket serials). Nothing touches the API.
 """
 
 import re
@@ -25,24 +25,37 @@ def formula_tokens(formula):
     return seen
 
 
-def distinct_values(values):
-    """Return sorted, distinct, non-empty values from a flat list.
+def mapping_values_formula(source_range):
+    """The live spill for a Mapping dimension column: sorted distinct values.
 
-    Cell values are coerced to stripped strings. Blanks are dropped. Order is
-    a plain ascending string sort so the Mapping column is stable run to run.
+    Sits in row 3 (under the header and the "**" sentinel) and tracks the
+    Data Source column as data lands, so Mapping never goes stale between
+    deploys. FILTER drops blanks but errors when the column is empty; the
+    bare IFERROR turns that into a blank cell.
     """
-    seen = set()
-    result = []
-    for value in values:
-        if value is None:
-            continue
-        text = str(value).strip()
-        if text == "":
-            continue
-        if text not in seen:
-            seen.add(text)
-            result.append(text)
-    return sorted(result)
+    return '=IFERROR(SORT(UNIQUE(FILTER({r}, {r}<>""))))'.format(r=source_range)
+
+
+def mapping_dates_formula(source_range):
+    """The live spill for Mapping's dates column: distinct days, newest first.
+
+    ISNUMBER keeps only real date serials (blanks and text junk drop out,
+    matching what the old Python bucketing skipped); INT strips any
+    time-of-day so datetimes collapse to their day; SORT descending puts
+    the newest date on top. The bare IFERROR blanks an empty column.
+    """
+    return (
+        '=IFERROR(SORT(UNIQUE(ARRAYFORMULA(INT('
+        'FILTER({r}, ISNUMBER({r}))))), 1, FALSE))'
+    ).format(r=source_range)
+
+
+def mapping_years_formula(source_range):
+    """The live spill for Mapping's Year column: distinct years, newest first."""
+    return (
+        '=IFERROR(SORT(UNIQUE(ARRAYFORMULA(YEAR('
+        'FILTER({r}, ISNUMBER({r}))))), 1, FALSE))'
+    ).format(r=source_range)
 
 
 def sumifs_expr(metric_range, dimensions, sentinel="**"):
@@ -96,24 +109,6 @@ def bucket_serial(serial, granularity):
     raise ValueError("unknown granularity: {}".format(granularity))
 
 
-def distinct_buckets(serials, granularity):
-    """Sorted, distinct bucket-start serials from raw date serials.
-
-    Non-numeric / blank cells are skipped.
-    """
-    seen = set()
-    out = []
-    for value in serials:
-        try:
-            bucket = bucket_serial(value, granularity)
-        except (ValueError, TypeError):
-            continue
-        if bucket not in seen:
-            seen.add(bucket)
-            out.append(bucket)
-    return sorted(out)
-
-
 # --- picker-driven period windows --------------------------------------------
 
 # Rows in each view's period matrix. The matrices are rolling TODAY-anchored
@@ -128,7 +123,7 @@ PERIOD_ROWS = {"day": 14, "week": 6, "month": 12}
 def picker_default_formulas(granularity):
     """Default formulas for a view's date controls.
 
-    The controls scope the break-out tables (see picker_window_criteria).
+    The controls scope the break-out tables (see window_cell_formulas).
     Yesterday is the newest reference day everywhere (today's data is
     usually partial): weekly returns a (from, to) pair ending yesterday;
     monthly returns yesterday's calendar year. Daily has no defaults: its
@@ -176,28 +171,34 @@ def period_next_formula(granularity, cell):
     raise ValueError("unknown granularity: {}".format(granularity))
 
 
-def picker_window_criteria(granularity, picker):
-    """SUMIFS criteria pair (lower, upper) for the tab's picked date window.
+def window_cell_formulas(granularity, picker):
+    """The two window-cell formulas resolving the tab's date controls.
 
     `picker` is the (from, to) cell-ref pair for day/week, or the year cell
-    ref for month. A blank picker cell leaves that side unbounded (0 below,
-    a number past any date serial above), so a tab with blank date controls
-    still totals all data instead of erroring. Upper bounds are exclusive
-    ("<" of the next day/year) so date-time values on the last day are still
-    included.
+    ref for month. The pair of hidden window cells absorbs the blank-control
+    handling once per tab: a blank control leaves that side unbounded (0
+    below, a number past any date serial above), and the upper cell holds
+    the exclusive bound (the next day/year) so date-time values on the last
+    day still count. Every break-out SUMIFS then references a plain bound
+    instead of repeating the IF in each cell.
     """
     if granularity in ("day", "week"):
         f, t = picker
         return (
-            '">="&IF({f}="",0,{f})'.format(f=f),
-            '"<"&IF({t}="",9.9E+307,{t}+1)'.format(t=t),
+            '=IF({f}="",0,{f})'.format(f=f),
+            '=IF({t}="",9.9E+307,{t}+1)'.format(t=t),
         )
     if granularity == "month":
         return (
-            '">="&IF({y}="",0,DATE({y},1,1))'.format(y=picker),
-            '"<"&IF({y}="",9.9E+307,DATE({y}+1,1,1))'.format(y=picker),
+            '=IF({y}="",0,DATE({y},1,1))'.format(y=picker),
+            '=IF({y}="",9.9E+307,DATE({y}+1,1,1))'.format(y=picker),
         )
     raise ValueError("unknown granularity: {}".format(granularity))
+
+
+def window_criteria(lo_cell, hi_cell):
+    """SUMIFS criteria pair (lower, upper) bounding dates by the window cells."""
+    return ('">="&{}'.format(lo_cell), '"<"&{}'.format(hi_cell))
 
 
 def range_guarded(formula, from_cell, to_cell):
@@ -312,6 +313,16 @@ def grand_total_formula(metric, dim_specs, sentinel):
     return build_sumifs_formula(sanitise_name(metric.name), dim_specs, sentinel)
 
 
+def column_total_formula(col_letter, first_row, last_row):
+    """SUM down one metric column's data rows, e.g. =SUM(B16:B27).
+
+    Blank guarded cells hold "" (text), which SUM ignores, so the range
+    needs no guard of its own. Calculated fields never reach here: their
+    total is rebuilt by calc_cell_formula from the totals row's own cells.
+    """
+    return "=SUM({c}{a}:{c}{b})".format(c=col_letter, a=first_row, b=last_row)
+
+
 def bucket_formula(metric, date_range, cell, granularity, dim_specs, sentinel):
     """The per-bucket value for a raw metric, filtered by the dropdowns.
 
@@ -329,7 +340,7 @@ def _breakout_expr(metric_range, dim_range, value_cell, date_range, lower,
 
     The break-out dimension is pinned to `value_cell` (the row label), the
     total is bounded by the tab's date controls (lower / upper are full
-    criteria strings, see picker_window_criteria), and the other shown
+    criteria strings, see window_criteria), and the other shown
     dimensions are still filtered by their dropdowns.
     """
     parts = [metric_range, dim_range, value_cell,

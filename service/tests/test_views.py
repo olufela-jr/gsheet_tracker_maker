@@ -6,7 +6,7 @@ import pytest
 
 from config import DEFAULT_CONFIG
 from tracker import (
-    MAX_BREAKOUT_VALUES,
+    DEFAULT_BREAKOUT_CAP,
     ValidationError,
     build_comparison,
     build_view,
@@ -179,6 +179,29 @@ class TestBuildView:
         assert len(matrix[0]) == 3  # one column per metric
         assert matrix[0][0].startswith('=IF(A16="","",SUMIFS(Spend')
         assert "EOMONTH(A16,0)" in matrix[0][0]
+
+    def test_matrix_totals_row_sums_the_period_rows(self):
+        client = _client(DEFAULT_CONFIG.monthly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        # A Total row right under the 12 period rows (16-27): plain metrics
+        # SUM their column; the calculated CPC divides the totals themselves.
+        total = client._find_write(client.formula_writes, "A28")
+        assert total == [[
+            "Total",
+            "=SUM(B16:B27)",
+            "=SUM(C16:C27)",
+            '=IFERROR(B28/C28, "")',
+        ]]
+
+    def test_chart_stops_above_the_totals_row(self):
+        client = _client(DEFAULT_CONFIG.monthly_tab)
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.monthly_tab, "month")
+        added = [r for batch in client.batch_updates for r in batch if "addChart" in r]
+        domain = added[0]["addChart"]["chart"]["spec"]["basicChart"][
+            "domains"][0]["domain"]["sourceRange"]["sources"][0]
+        # Half-open end at index 27 = A1 row 27, the last period row; the
+        # Total row (28) stays out of the trend line.
+        assert domain["endRowIndex"] == 27
 
     def test_monthly_year_dropdown_sources_available_years(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
@@ -370,6 +393,8 @@ class TestBuildView:
         assert client._find_write(client.raw_writes, "A7") == [["Totals", "Spend"]]
 
     def test_breakout_table_rendered(self):
+        # The legacy checkbox: TRUE reads as the default cap, so a tracker
+        # built before the column held a number renders unchanged.
         client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="TRUE")
         result = build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         assert result["breakouts"] == ["Region"]
@@ -377,6 +402,16 @@ class TestBuildView:
         assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
         # Its values come from the Mapping tab.
         assert client._has_raw([["North"], ["South"]])
+        # And its label rows are swappable: a dropdown sourced below the
+        # sentinel row covers them.
+        assert any(
+            "3:" in str(r["setDataValidation"]["rule"]["condition"]["values"])
+            for batch in client.batch_updates
+            for r in batch
+            if "setDataValidation" in r
+            and r["setDataValidation"].get("rule", {}).get(
+                "condition", {}).get("type") == "ONE_OF_RANGE"
+        )
         # A break-out cell pins the dimension to the row's value label and is
         # bounded by the tab's date pickers (blank picker = unbounded side).
         breakout = [
@@ -385,95 +420,139 @@ class TestBuildView:
         ]
         assert breakout
         cell = breakout[0]["values"][0][0]
-        assert 'Day, ">="&IF($B$3="",0,$B$3)' in cell
-        assert 'Day, "<"&IF($D$3="",9.9E+307,$D$3+1)' in cell
+        # The bounds are plain refs to the hidden window cells; the
+        # blank-picker handling lives in those cells, not here.
+        assert 'Day, ">="&$K$3' in cell
+        assert 'Day, "<"&$L$3' in cell
+        # The window cells themselves resolve the pickers, and their columns
+        # are hidden from readers.
+        assert client._find_write(client.formula_writes, "K3") == [
+            ['=IF($B$3="",0,$B$3)', '=IF($D$3="",9.9E+307,$D$3+1)']
+        ]
+        hidden = [
+            r["updateDimensionProperties"] for batch in client.batch_updates
+            for r in batch if "updateDimensionProperties" in r
+        ]
+        assert any(
+            h["range"]["startIndex"] == 10 and h["range"]["endIndex"] == 12
+            and h["properties"] == {"hiddenByUser": True}
+            for h in hidden
+        )
 
 
-class TestPartialBreakout:
-    """A partial break-out: fixed rows the user picks values into."""
+    def test_breakout_totals_row_sums_the_visible_rows(self):
+        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="TRUE")
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        # The break-out's value rows sit at 27-28 (weekly matrix ends at its
+        # Total row 22); the block's own Total row sums exactly those cells.
+        total = client._find_write(client.formula_writes, "A29")
+        assert total == [[
+            "Total",
+            "=SUM(B27:B28)",
+            "=SUM(C27:C28)",
+            '=IFERROR(B29/C29, "")',
+        ]]
 
-    def _built(self):
-        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout="partial")
+
+class TestBreakoutCap:
+    """A break-out gets the rows its Setup cap asks for, labels swappable."""
+
+    def _built(self, cap):
+        client = _client(DEFAULT_CONFIG.weekly_tab, region_breakout=cap)
         build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         return client
 
-    def _dropdowns(self, client):
-        return [
+    def _pickers(self, client):
+        """The label-column swap dropdowns.
+
+        They are the only ONE_OF_RANGE rules sourced from Mapping row 3 —
+        slicers and date dropdowns all start at row 2 (the sentinel row).
+        """
+        rules = [
             r["setDataValidation"] for batch in client.batch_updates
             for r in batch
             if "setDataValidation" in r
             and r["setDataValidation"].get("rule", {}).get(
                 "condition", {}).get("type") == "ONE_OF_RANGE"
         ]
-
-    def _block(self, client):
-        """The break-out's formula write: 30 rows starting in column B."""
-        writes = [
-            w for w in client.formula_writes
-            if w["range"].split("!")[-1].startswith("B")
-            and len(w["values"]) == 30
+        return [
+            r for r in rules
+            if "3:" in r["rule"]["condition"]["values"][0]["userEnteredValue"]
         ]
-        assert len(writes) == 1
-        return writes[0]
 
-    def test_the_title_says_how_many_rows_there_are_to_pick(self):
-        assert self._built()._has_raw([["By Region  (pick up to 30)"]])
-
-    def test_the_label_column_is_left_empty(self):
-        client = self._built()
-        # The header still names the dimension, but the rows below it are the
-        # user's to fill: nothing is auto-populated from Mapping.
-        assert client._has_raw([["Region", "Spend", "Clicks", "CPC"]])
+    def test_a_cap_below_the_value_count_truncates_and_says_so(self):
+        client = self._built("1")
+        assert client._has_raw([["By Region  (first 1 of 2)"]])
+        # Only the first Mapping value is pre-filled.
+        assert client._has_raw([["North"]])
         assert not client._has_raw([["North"], ["South"]])
 
-    def _picker(self, client):
-        """The break-out's label-column dropdown, the only 30-row-tall one.
+    def test_a_cap_above_the_value_count_lists_everything(self):
+        client = self._built("30")
+        # No truncation, so no suffix on the title.
+        assert client._has_raw([["By Region"]])
+        assert client._has_raw([["North"], ["South"]])
 
-        Column A also carries the compare block's From cells, so height is
-        what identifies this rule, not position.
-        """
-        rules = [
-            d for d in self._dropdowns(client)
-            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
-        ]
-        assert len(rules) == 1
-        return rules[0]
-
-    def test_rows_use_the_same_formula_a_total_breakout_does(self):
-        # A partial row is a total row whose label the reader supplies, so the
-        # cell is the plain date-scoped SUMIFS with nothing wrapped round it.
-        block = self._block(self._built())
-        rows = block["values"]
-        assert block["range"].endswith("B26")
-        assert len(rows) == 30
-        spend = rows[0][0]
-        assert spend.startswith("=SUMIFS(Spend, Region, A26,")
-        assert 'Day, ">="&IF($B$3="",0,$B$3)' in spend
-        # A calculated metric still just divides its sibling cells.
-        assert rows[0][2] == '=IFERROR(B26/C26, "")'
-        # The last row is 29 below the first, on its own label cell.
-        assert rows[29][0].startswith("=SUMIFS(Spend, Region, A55,")
-
-    def test_the_label_column_gets_one_dropdown_covering_all_thirty_rows(self):
-        rng = self._picker(self._built())["range"]
+    def test_the_label_column_gets_one_dropdown_covering_its_rows(self):
+        pickers = self._pickers(self._built("30"))
+        assert len(pickers) == 1
+        rng = pickers[0]["range"]
         assert rng["startColumnIndex"] == 0
         assert rng["endColumnIndex"] == 1
-        # Row 26 in A1 terms is index 25, and it runs 30 rows from there.
-        assert rng["startRowIndex"] == 25
-        assert rng["endRowIndex"] == 55
+        # Row 27 in A1 terms is index 26, and both pre-filled rows are
+        # swappable — the dropdown covers exactly the block's value rows,
+        # leaving the Total row below them fixed.
+        assert rng["startRowIndex"] == 26
+        assert rng["endRowIndex"] == 28
 
-    def test_the_picker_list_skips_the_all_sentinel(self):
-        picker = self._picker(self._built())
+    def test_the_swap_list_skips_the_all_sentinel(self):
+        picker = self._pickers(self._built("30"))[0]
         source = picker["rule"]["condition"]["values"][0]["userEnteredValue"]
         # Mapping row 2 is "**" (meaning "All"); as a row label it would total
         # every row rather than one value, so the list starts at row 3.
         assert source == "='mapping'!A3:A"
 
-    def test_total_and_partial_blocks_stack_in_setup_order(self):
+    def test_a_capped_totals_row_sums_only_the_visible_rows(self):
+        client = self._built("1")
+        # One visible row, so the Total covers that single cell — the column
+        # always adds up visually, even when the title says rows were cut.
+        total = client._find_write(client.formula_writes, "A28")
+        assert total == [[
+            "Total",
+            "=SUM(B27:B27)",
+            "=SUM(C27:C27)",
+            '=IFERROR(B28/C28, "")',
+        ]]
+
+    def test_an_empty_breakout_gets_no_totals_row(self):
+        # A broken-out dimension whose Mapping column has no values yet: the
+        # block renders title + header only, so no Total row either. The one
+        # "Total" write left is the period matrix's.
         setup = [
             ["Day", "date", "", "", "", ""],
-            ["Region", "dimension", "", "", "TRUE", "total"],
-            ["Campaign", "dimension", "", "", "", "partial"],
+            ["Region", "dimension", "", "", "TRUE", "TRUE"],
+            ["Spend", "metric", "", "currency", "", ""],
+        ]
+        mapping = [["Region"], ["**"]]
+        client = FakeClient(
+            setup,
+            ["Day", "Region", "Spend"],
+            [date_to_serial(date(2025, 8, 4))],
+            {"setup": 1, "data_source": 2, DEFAULT_CONFIG.weekly_tab: 3},
+            mapping_rows=mapping,
+        )
+        build_view(client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
+        totals = [
+            w for w in client.formula_writes
+            if w["values"] and w["values"][0] and w["values"][0][0] == "Total"
+        ]
+        assert len(totals) == 1
+
+    def test_capped_blocks_stack_in_setup_order(self):
+        setup = [
+            ["Day", "date", "", "", "", ""],
+            ["Region", "dimension", "", "", "TRUE", "50"],
+            ["Campaign", "dimension", "", "", "", "1"],
             ["Spend", "metric", "", "currency", "", ""],
         ]
         mapping = [
@@ -492,24 +571,24 @@ class TestPartialBreakout:
         result = build_view(
             client, DEFAULT_CONFIG, DEFAULT_CONFIG.weekly_tab, "week")
         assert result["breakouts"] == ["Region", "Campaign"]
-        # The total block lists its Mapping values; the partial one names how
-        # many rows there are to pick and leaves them blank.
+        # Region's cap fits everything; Campaign's truncates at one row.
         assert client._has_raw([["By Region"]])
         assert client._has_raw([["North"], ["South"]])
-        assert client._has_raw([["By Campaign  (pick up to 30)"]])
+        assert client._has_raw([["By Campaign  (first 1 of 2)"]])
+        assert client._has_raw([["Alpha"]])
         assert not client._has_raw([["Alpha"], ["Beta"]])
-        # Only the partial block gets a picker, sourced from Campaign's
-        # Mapping column (B, the second mapping dimension).
-        pickers = [
-            d for d in self._dropdowns(client)
-            if d["range"]["endRowIndex"] - d["range"]["startRowIndex"] == 30
+        # Each block gets its own swap dropdown, sourced from its own Mapping
+        # column, and Campaign's sits below Region's.
+        pickers = self._pickers(client)
+        sources = [
+            p["rule"]["condition"]["values"][0]["userEnteredValue"]
+            for p in pickers
         ]
-        assert len(pickers) == 1
-        assert (pickers[0]["rule"]["condition"]["values"][0]["userEnteredValue"]
-                == "='mapping'!B3:B")
-        # Campaign is below Region, so its rows start after the total block's
-        # two values plus the title, header and the two-row gap.
-        assert pickers[0]["range"]["startRowIndex"] > 25
+        assert sources == ["='mapping'!A3:A", "='mapping'!B3:B"]
+        region, campaign = pickers
+        assert region["range"]["endRowIndex"] - region["range"]["startRowIndex"] == 2
+        assert campaign["range"]["endRowIndex"] - campaign["range"]["startRowIndex"] == 1
+        assert campaign["range"]["startRowIndex"] > region["range"]["endRowIndex"]
 
 
 class TestBuildViews:
@@ -555,15 +634,15 @@ class TestGridFits:
         ]
 
     def _tall_client(self, n_breakouts):
-        # Each broken-out dimension adds a table of up to MAX_BREAKOUT_VALUES
-        # rows, so enough of them push the tab past 1000 rows.
+        # Each broken-out dimension adds a table of up to its row cap (the
+        # default here), so enough of them push the tab past 1000 rows.
         setup = [["Day", "date", "", "", "", ""]]
         dims = ["Dim{}".format(i) for i in range(n_breakouts)]
         for dim in dims:
             setup.append([dim, "dimension", "", "", "TRUE", "TRUE"])
         setup.append(["Spend", "metric", "", "currency", "", ""])
         mapping = [dims, ["**"] * n_breakouts]
-        for i in range(MAX_BREAKOUT_VALUES):
+        for i in range(DEFAULT_BREAKOUT_CAP):
             mapping.append(["v{}".format(i)] * n_breakouts)
         tabs = {"setup": 1, "data_source": 2, DEFAULT_CONFIG.daily_tab: 3}
         return FakeClient(setup, ["Day"] + dims + ["Spend"],

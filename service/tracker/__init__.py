@@ -20,14 +20,13 @@ Everything public is re-exported here, so `import tracker` and
 from .audit import TRACKER_FIELDS, build_tracker_record, log_tracker
 from .comparison import COMPARISON_PERIODS, build_comparison
 from .fields import (
-    BREAKOUT_MODES,
-    BREAKOUT_PARTIAL,
-    BREAKOUT_TOTAL,
+    DEFAULT_BREAKOUT_CAP,
+    MAX_BREAKOUT_CAP,
     Field,
     SETUP_HEADERS,
     ValidationError,
+    breakout_caps_of,
     breakout_dimensions_of,
-    breakout_modes_of,
     date_field_of,
     dimensions_of,
     is_calculated,
@@ -54,15 +53,18 @@ from .formulas import (
     build_sumifs_formula,
     calc_cell_formula,
     calc_expr,
+    column_total_formula,
     date_to_serial,
-    distinct_buckets,
-    distinct_values,
     formula_tokens,
+    mapping_dates_formula,
+    mapping_values_formula,
+    mapping_years_formula,
     number_format_pattern,
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
-    picker_window_criteria,
+    window_cell_formulas,
+    window_criteria,
     range_guarded,
     serial_to_date,
     sumifs_expr,
@@ -76,13 +78,7 @@ from .scaffold import (
     require_input_tabs,
     scaffold,
 )
-from .views import (
-    BREAKOUT_PARTIAL_ROWS,
-    MAX_BREAKOUT_VALUES,
-    build_view,
-    build_views,
-    view_specs,
-)
+from .views import build_view, build_views, view_specs
 
 
 def run_all(client, cfg):

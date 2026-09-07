@@ -12,6 +12,7 @@ from tracker import (
     ValidationError,
     blank_guarded,
     calc_cell_formula,
+    column_total_formula,
     is_calculated,
     label_of,
     labels_of,
@@ -21,18 +22,20 @@ from tracker import (
     build_calc_formula,
     build_sumifs_formula,
     breakout_dimensions_of,
-    breakout_modes_of,
+    breakout_caps_of,
     date_field_of,
     date_to_serial,
     dimensions_of,
-    distinct_buckets,
-    distinct_values,
+    mapping_dates_formula,
+    mapping_values_formula,
+    mapping_years_formula,
     formula_tokens,
     mapping_dimensions_of,
     period_next_formula,
     period_start_formula,
     picker_default_formulas,
-    picker_window_criteria,
+    window_cell_formulas,
+    window_criteria,
     range_guarded,
     read_setup,
     setup_columns,
@@ -91,20 +94,6 @@ class TestBucketing:
         s = date_to_serial(date(2025, 8, 19)) + 0.75
         assert bucket_serial(s, "day") == date_to_serial(date(2025, 8, 19))
 
-    def test_distinct_buckets_weekly_and_sorted(self):
-        serials = [
-            date_to_serial(date(2025, 8, 25)),  # Mon week B
-            date_to_serial(date(2025, 8, 19)),  # Tue week A
-            date_to_serial(date(2025, 8, 18)),  # Mon week A
-            "not-a-date",
-        ]
-        buckets = distinct_buckets(serials, "week")
-        assert buckets == [
-            date_to_serial(date(2025, 8, 18)),
-            date_to_serial(date(2025, 8, 25)),
-        ]
-
-
 class TestPeriodWindows:
     PICKERS = ("$B$3", "$D$3")
 
@@ -144,20 +133,26 @@ class TestPeriodWindows:
         with pytest.raises(ValueError):
             period_next_formula("year", "A2")
         with pytest.raises(ValueError):
-            picker_window_criteria("year", self.PICKERS)
+            window_cell_formulas("year", self.PICKERS)
 
-    def test_picker_window_leaves_blank_sides_unbounded(self):
-        # The break-out tables' date bounds: a blank picker cell must not
-        # error the SUMIFS, it opens that side of the window instead.
-        lower, upper = picker_window_criteria("week", self.PICKERS)
-        assert lower == '">="&IF($B$3="",0,$B$3)'
-        assert upper == '"<"&IF($D$3="",9.9E+307,$D$3+1)'
-        assert picker_window_criteria("day", self.PICKERS) == (lower, upper)
+    def test_window_cells_leave_blank_sides_unbounded(self):
+        # The hidden window cells absorb the blank-control handling once per
+        # tab: a blank picker opens that side of the window instead of
+        # erroring the SUMIFS that reference the cells.
+        lo, hi = window_cell_formulas("week", self.PICKERS)
+        assert lo == '=IF($B$3="",0,$B$3)'
+        assert hi == '=IF($D$3="",9.9E+307,$D$3+1)'
+        assert window_cell_formulas("day", self.PICKERS) == (lo, hi)
 
-    def test_picker_window_month_covers_the_picked_year(self):
-        lower, upper = picker_window_criteria("month", "$B$3")
-        assert lower == '">="&IF($B$3="",0,DATE($B$3,1,1))'
-        assert upper == '"<"&IF($B$3="",9.9E+307,DATE($B$3+1,1,1))'
+    def test_window_cells_month_covers_the_picked_year(self):
+        lo, hi = window_cell_formulas("month", "$B$3")
+        assert lo == '=IF($B$3="",0,DATE($B$3,1,1))'
+        assert hi == '=IF($B$3="",9.9E+307,DATE($B$3+1,1,1))'
+
+    def test_window_criteria_reference_the_cells_plainly(self):
+        # The complexity lives in the window cells, so the criteria the
+        # SUMIFS carry are just a comparator and a cell ref.
+        assert window_criteria("$K$3", "$L$3") == ('">="&$K$3', '"<"&$L$3')
 
     def test_blank_guarded_wraps_a_formula(self):
         assert blank_guarded("=SUM(B:B)", "A5") == '=IF(A5="","",SUM(B:B))'
@@ -206,6 +201,14 @@ class TestSumifsExpr:
 
     def test_build_sumifs_formula_prefixes_equals(self):
         assert build_sumifs_formula("Spend", []) == "=SUM(Spend)"
+
+
+class TestColumnTotalFormula:
+    def test_sums_one_column_over_the_data_rows(self):
+        assert column_total_formula("B", 16, 27) == "=SUM(B16:B27)"
+
+    def test_a_single_row_range_is_valid(self):
+        assert column_total_formula("C", 27, 27) == "=SUM(C27:C27)"
 
 
 class TestBucketSumifsExpr:
@@ -503,7 +506,7 @@ class TestDisplayName:
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
         by_name = {f.name: f for f in fields}
         assert by_name["Region"].type == "dimension"
-        assert by_name["Region"].breakout == "total"
+        assert by_name["Region"].breakout == 50
         assert by_name["Spend"].fmt == "currency"
         assert all(f.display == "" for f in fields)
         assert labels_of(fields) == {
@@ -613,35 +616,43 @@ class TestBreakoutColumn:
         ]
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
         by_name = {f.name: f for f in fields}
-        # A checkbox predates the total/partial dropdown, so its TRUE reads as
-        # a total break-out — the shape those trackers already render.
-        assert by_name["Region"].breakout == "total"
-        assert by_name["Channel"].breakout == ""
-        assert by_name["Market"].breakout == "total"
+        # A checkbox predates the row-count cell, so its TRUE reads as the
+        # default cap — the block those trackers already render.
+        assert by_name["Region"].breakout == 50
+        assert by_name["Channel"].breakout == 0
+        assert by_name["Market"].breakout == 50
 
     @pytest.mark.parametrize(
         "cell,expected",
         [
-            ("total", "total"),
-            ("partial", "partial"),
-            # The dropdown is lower case, but a hand-typed cell need not be.
-            ("Total", "total"),
-            ("PARTIAL", "partial"),
-            ("  partial  ", "partial"),
-            # A tracker built before the column became a dropdown carries a
-            # checkbox, whose TRUE means the break-out it already renders.
-            ("TRUE", "total"),
-            ("x", "total"),
+            # A number is the cap: how many rows the block gets.
+            ("30", 30),
+            ("50", 50),
+            ("  10  ", 10),
+            ("1", 1),
+            # Sheets sometimes hands a number back with a decimal point.
+            ("30.0", 30),
+            # A typo cannot ask for thousands of SUMIFS rows on three tabs.
+            ("100000", 200),
             # Off, in every spelling a checkbox or a person produces.
-            ("", ""),
-            ("FALSE", ""),
-            ("no", ""),
+            ("", 0),
+            ("FALSE", 0),
+            ("no", 0),
+            ("0", 0),
+            ("-5", 0),
+            # A tracker built before the column held a number carries a
+            # checkbox (TRUE) or the short-lived mode dropdown's words; they
+            # keep meaning what those trackers already render.
+            ("TRUE", 50),
+            ("x", 50),
+            ("total", 50),
+            ("Partial", 30),
             # Anything else errs towards showing the table rather than
             # silently dropping one the user asked for.
-            ("top 30", "total"),
+            ("thirty", 50),
         ],
     )
-    def test_breakout_cell_reads_as_a_mode(self, cell, expected):
+    def test_breakout_cell_reads_as_a_row_cap(self, cell, expected):
         setup = [
             ["Day", "date", "", "", "", ""],
             ["Region", "dimension", "", "", "TRUE", cell],
@@ -649,20 +660,19 @@ class TestBreakoutColumn:
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
         assert {f.name: f for f in fields}["Region"].breakout == expected
 
-    def test_breakout_modes_of_keys_match_breakout_dimensions_of(self):
+    def test_breakout_caps_of_keys_match_breakout_dimensions_of(self):
         setup = [
             ["Day", "date", "", "", "", ""],
-            ["Region", "dimension", "", "", "TRUE", "total"],
-            ["Campaign", "dimension", "", "", "", "partial"],
+            ["Region", "dimension", "", "", "TRUE", "50"],
+            ["Campaign", "dimension", "", "", "", "10"],
             ["Channel", "dimension", "", "", "TRUE", ""],
-            ["Spend", "metric", "", "currency", "", "total"],
+            ["Spend", "metric", "", "currency", "", "50"],
         ]
         fields = read_setup(FakeReader(setup, ["Day"]), DEFAULT_CONFIG)
-        # A mode on a metric is meaningless and is ignored, and the two
-        # selectors must agree or a block would render with no mode.
+        # A cap on a metric is meaningless and is ignored, and the two
+        # selectors must agree or a block would render with no cap.
         assert breakout_dimensions_of(fields) == ["Region", "Campaign"]
-        assert breakout_modes_of(fields) == {
-            "Region": "total", "Campaign": "partial"}
+        assert breakout_caps_of(fields) == {"Region": 50, "Campaign": 10}
 
     def test_breakout_is_independent_of_show(self):
         # Market is broken out but not shown; Channel is shown but not broken out.
@@ -699,24 +709,30 @@ class TestBreakoutColumn:
         assert by_name["Heavy"].mapping is False
 
 
-class TestDistinctValues:
-    def test_sorted_distinct_non_empty(self):
-        values = ["b", "a", "b", "c", "a"]
-        assert distinct_values(values) == ["a", "b", "c"]
+class TestMappingValuesFormula:
+    def test_unique_sorted_spill_over_the_source_column(self):
+        # FILTER drops blanks; the bare IFERROR blanks an empty column
+        # (FILTER errors when nothing matches) instead of showing #N/A.
+        assert mapping_values_formula("'data_source'!B2:B") == (
+            '=IFERROR(SORT(UNIQUE(FILTER('
+            "'data_source'!B2:B, 'data_source'!B2:B<>\"\"))))"
+        )
 
-    def test_drops_blanks_and_whitespace(self):
-        values = ["a", "", "  ", None, "b", "a"]
-        assert distinct_values(values) == ["a", "b"]
+    def test_dates_spill_buckets_to_days_newest_first(self):
+        # ISNUMBER keeps only real serials; INT strips time-of-day so
+        # datetimes collapse to their day; FALSE sorts newest on top.
+        assert mapping_dates_formula("'data_source'!A2:A") == (
+            "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(INT("
+            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "1, FALSE))"
+        )
 
-    def test_strips_surrounding_whitespace(self):
-        # "x " and "x" are the same value once stripped.
-        assert distinct_values([" x ", "x"]) == ["x"]
-
-    def test_coerces_non_strings(self):
-        assert distinct_values([1, 2, 2, 1]) == ["1", "2"]
-
-    def test_empty_input(self):
-        assert distinct_values([]) == []
+    def test_years_spill_newest_first(self):
+        assert mapping_years_formula("'data_source'!A2:A") == (
+            "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(YEAR("
+            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "1, FALSE))"
+        )
 
 
 class TestBuildSumifsFormula:

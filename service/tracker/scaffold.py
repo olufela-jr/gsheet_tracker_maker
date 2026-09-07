@@ -8,7 +8,6 @@ Source column has a named range the SUMIFS formulas can reference.
 import theme
 from config import column_to_letter, sanitise_name, a1
 
-from .common import read_date_serials
 from .fields import (
     SETUP_HEADERS,
     ValidationError,
@@ -17,7 +16,12 @@ from .fields import (
     read_data_source_headers,
     read_setup,
 )
-from .formulas import DATE_FORMAT, distinct_buckets, distinct_values, serial_to_date
+from .formulas import (
+    DATE_FORMAT,
+    mapping_dates_formula,
+    mapping_values_formula,
+    mapping_years_formula,
+)
 
 
 def existing_titles(client):
@@ -108,11 +112,12 @@ def generate_mapping(client, cfg):
 
     Every dimension gets a column regardless of its Show box (Show only
     controls the view slicers). Each column is: header in row 1, the sentinel
-    in row 2, then the distinct sorted values from Data Source in row 3+.
+    in row 2, then in row 3 a live UNIQUE spill of the Data Source column —
+    not hardcoded values — so the list tracks the data between deploys.
     After the dimensions come two generated columns the views' date controls
     source from: the distinct dates seen in the data, then the distinct
-    years of those dates (each: header row 1, values from row 2, newest
-    first, no sentinel). Mapping is cleared first.
+    years of those dates (each: header row 1, then a live spill from row 2,
+    newest first, no sentinel). Mapping is cleared first.
     """
     fields = read_setup(client, cfg)
     headers = read_data_source_headers(client, cfg)
@@ -125,61 +130,80 @@ def generate_mapping(client, cfg):
     client.clear_range(cfg.mapping_tab)
 
     data = []
+    formulas = []
     for idx, dim in enumerate(dimensions):
         source_col = column_to_letter(header_index[dim] + 1)
-        raw_column = client.read_range(
-            a1(cfg.data_source_tab, "{c}2:{c}".format(c=source_col))
-        )
-        flat = [row[0] if row else "" for row in raw_column]
-        values = distinct_values(flat)
+        source = a1(cfg.data_source_tab, "{c}2:{c}".format(c=source_col))
 
         target_col = column_to_letter(idx + 1)
-        column_cells = [[dim], [cfg.sentinel]] + [[v] for v in values]
         data.append(
             {
                 "range": a1(cfg.mapping_tab, "{c}1".format(c=target_col)),
                 "majorDimension": "ROWS",
-                "values": column_cells,
+                "values": [[dim], [cfg.sentinel]],
+            }
+        )
+        formulas.append(
+            {
+                "range": a1(cfg.mapping_tab, "{c}3".format(c=target_col)),
+                "majorDimension": "ROWS",
+                "values": [[mapping_values_formula(source)]],
             }
         )
 
-    dates, years = [], []
     if date_name is not None:
-        serials = read_date_serials(client, cfg, date_name, headers)
-        dates = sorted(distinct_buckets(serials, "day"), reverse=True)
-        years = sorted({serial_to_date(s).year for s in dates}, reverse=True)
+        date_source_col = column_to_letter(header_index[date_name] + 1)
+        source = a1(
+            cfg.data_source_tab, "{c}2:{c}".format(c=date_source_col))
         date_col = column_to_letter(len(dimensions) + 1)
         year_col = column_to_letter(len(dimensions) + 2)
         data.append(
             {
                 "range": a1(cfg.mapping_tab, "{c}1".format(c=date_col)),
                 "majorDimension": "ROWS",
-                "values": [[date_name]] + [[s] for s in dates],
+                "values": [[date_name]],
             }
         )
         data.append(
             {
                 "range": a1(cfg.mapping_tab, "{c}1".format(c=year_col)),
                 "majorDimension": "ROWS",
-                "values": [["Year"]] + [[y] for y in years],
+                "values": [["Year"]],
+            }
+        )
+        formulas.append(
+            {
+                "range": a1(cfg.mapping_tab, "{c}2".format(c=date_col)),
+                "majorDimension": "ROWS",
+                "values": [[mapping_dates_formula(source)]],
+            }
+        )
+        formulas.append(
+            {
+                "range": a1(cfg.mapping_tab, "{c}2".format(c=year_col)),
+                "majorDimension": "ROWS",
+                "values": [[mapping_years_formula(source)]],
             }
         )
 
     if data:
         client.batch_write_values(data, value_input_option="RAW")
+    if formulas:
+        client.batch_write_values(formulas, value_input_option="USER_ENTERED")
 
-    if dates:
+    if date_name is not None:
+        # The spill's length changes with the data, so the date format runs
+        # to the grid bottom rather than a length known at deploy time.
         sheet_id = client.get_sheet_id(cfg.mapping_tab)
         client.batch_update([
-            theme.num_format(sheet_id, 1, 1 + len(dates),
-                             len(dimensions), len(dimensions) + 1, DATE_FORMAT)
+            theme.num_format_col(sheet_id, 1, len(dimensions),
+                                 len(dimensions) + 1, DATE_FORMAT)
         ])
 
     return {
         "dimensions": dimensions,
         "columns": len(dimensions),
-        "dates": len(dates),
-        "years": len(years),
+        "has_dates": date_name is not None,
     }
 
 
