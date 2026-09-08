@@ -126,7 +126,7 @@ class TestGenerateMapping:
         assert client._find_write(client.raw_writes, "A1") == [["Region"], ["**"]]
         assert client._find_write(client.formula_writes, "A3") == [[
             '=IFERROR(SORT(UNIQUE(FILTER('
-            "'data_source'!B2:B, 'data_source'!B2:B<>\"\"))))"
+            "'data_source'!$B$2:$B, 'data_source'!$B$2:$B<>\"\"))))"
         ]]
 
     def test_mapping_carries_the_available_dates(self):
@@ -143,12 +143,12 @@ class TestGenerateMapping:
         assert client._find_write(client.raw_writes, "C1") == [["Year"]]
         assert client._find_write(client.formula_writes, "B2") == [[
             "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(INT("
-            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "FILTER('data_source'!$A$2:$A, ISNUMBER('data_source'!$A$2:$A))))), "
             "1, FALSE))"
         ]]
         assert client._find_write(client.formula_writes, "C2") == [[
             "=IFERROR(SORT(UNIQUE(ARRAYFORMULA(YEAR("
-            "FILTER('data_source'!A2:A, ISNUMBER('data_source'!A2:A))))), "
+            "FILTER('data_source'!$A$2:$A, ISNUMBER('data_source'!$A$2:$A))))), "
             "1, FALSE))"
         ]]
 
@@ -383,7 +383,7 @@ class TestCreateNamedRanges:
         result = create_named_ranges(client, DEFAULT_CONFIG)
         assert result["created"] == ["Spend"]
         grid = client.batch_requests[0]["addNamedRange"]["namedRange"]["range"]
-        # We ask for 'data_source'!A2:A. Sheets stores it bounded at rowCount
+        # We ask for 'data_source'!$A$2:$A. Sheets stores it bounded at rowCount
         # regardless, but asking open-ended is what pins it to the CURRENT
         # height rather than a stale one.
         assert grid["startRowIndex"] == 1

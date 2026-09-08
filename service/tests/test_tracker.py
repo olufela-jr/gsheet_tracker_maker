@@ -205,10 +205,10 @@ class TestSumifsExpr:
 
 class TestColumnTotalFormula:
     def test_sums_one_column_over_the_data_rows(self):
-        assert column_total_formula("B", 16, 27) == "=SUM(B16:B27)"
+        assert column_total_formula("B", 16, 27) == "=SUM(B$16:B$27)"
 
     def test_a_single_row_range_is_valid(self):
-        assert column_total_formula("C", 27, 27) == "=SUM(C27:C27)"
+        assert column_total_formula("C", 27, 27) == "=SUM(C$27:C$27)"
 
 
 class TestBucketSumifsExpr:

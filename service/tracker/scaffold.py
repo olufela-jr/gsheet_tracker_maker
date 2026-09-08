@@ -133,7 +133,9 @@ def generate_mapping(client, cfg):
     formulas = []
     for idx, dim in enumerate(dimensions):
         source_col = column_to_letter(header_index[dim] + 1)
-        source = a1(cfg.data_source_tab, "{c}2:{c}".format(c=source_col))
+        # Pinned: one spill cell per column, and a sideways fill must not walk
+        # the source on to the neighbouring Data Source column.
+        source = a1(cfg.data_source_tab, "${c}$2:${c}".format(c=source_col))
 
         target_col = column_to_letter(idx + 1)
         data.append(
@@ -154,7 +156,7 @@ def generate_mapping(client, cfg):
     if date_name is not None:
         date_source_col = column_to_letter(header_index[date_name] + 1)
         source = a1(
-            cfg.data_source_tab, "{c}2:{c}".format(c=date_source_col))
+            cfg.data_source_tab, "${c}$2:${c}".format(c=date_source_col))
         date_col = column_to_letter(len(dimensions) + 1)
         year_col = column_to_letter(len(dimensions) + 2)
         data.append(

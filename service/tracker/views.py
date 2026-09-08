@@ -36,7 +36,7 @@ the named ranges and [Field] tokens bind to.
 from collections import namedtuple
 
 import theme
-from config import column_to_letter, sanitise_name, a1
+from config import cell_ref, column_to_letter, sanitise_name, a1
 
 from .common import (
     Page,
@@ -246,7 +246,7 @@ def _add_filter_header(page, v):
         page.fmt.append(theme.num_format(
             page.sheet_id, dates_row - 1, dates_row, 1, 2, "0"))
         date_pairs = 1
-        pickers = "$B${}".format(dates_row)
+        pickers = cell_ref(2, dates_row)
     else:
         if v.granularity == "day":
             # No defaults: blank dropdowns of the available dates; the by-day
@@ -269,7 +269,7 @@ def _add_filter_header(page, v):
         page.fmt.append(theme.num_format(
             page.sheet_id, dates_row - 1, dates_row, 3, 4, DATE_FORMAT))
         date_pairs = 2
-        pickers = ("$B${}".format(dates_row), "$D${}".format(dates_row))
+        pickers = (cell_ref(2, dates_row), cell_ref(4, dates_row))
     for k in range(date_pairs):
         page.fmt.append(theme.header_row(
             page.sheet_id, dates_row - 1, k * 2, k * 2 + 1))
@@ -285,9 +285,9 @@ def _add_filter_header(page, v):
         r = grid_first + i // PAIRS_PER_ROW
         col0 = (i % PAIRS_PER_ROW) * 2  # 0-based label column
         drop_positions.append((r - 1, col0 + 1))
-        dim_specs.append(
-            (sanitise_name(dim), "{}{}".format(column_to_letter(col0 + 2), r))
-        )
+        # Pinned both ways: one fixed cell that every SUMIFS on the tab reads,
+        # from blocks hundreds of rows below and columns away.
+        dim_specs.append((sanitise_name(dim), cell_ref(col0 + 2, r)))
     grid_rows = -(-len(v.dimensions) // PAIRS_PER_ROW)  # ceil
     for gr in range(grid_rows):
         row_dims = v.dimensions[gr * PAIRS_PER_ROW:(gr + 1) * PAIRS_PER_ROW]
@@ -329,8 +329,8 @@ def _add_filter_header(page, v):
     page.fmt.append(theme.hide_columns(
         page.sheet_id, _WINDOW_COL, _WINDOW_COL + 2))
     window = (
-        "${}${}".format(column_to_letter(_WINDOW_COL + 1), dates_row),
-        "${}${}".format(column_to_letter(_WINDOW_COL + 2), dates_row),
+        cell_ref(_WINDOW_COL + 1, dates_row),
+        cell_ref(_WINDOW_COL + 2, dates_row),
     )
 
     page.row = first_row + max(1 + grid_rows, 2) + 1
@@ -341,12 +341,15 @@ def _metric_cell_of(v, first_col, row):
     """cell_of(name) for calc_cell_formula: a sibling metric cell in `row`.
 
     first_col is the 1-based column of the block's first metric; each metric
-    occupies one column in Setup order.
+    occupies one column in Setup order. Each operand names a specific metric's
+    column, so the column is pinned; the row stays relative, which is the axis
+    a reader drags a calc cell along.
     """
     index = {m.name: i for i, m in enumerate(v.metric_fields)}
-    return lambda name: "{}{}".format(
-        column_to_letter(first_col + resolve_token_(index, name, v.metric_fields)),
+    return lambda name: cell_ref(
+        first_col + resolve_token_(index, name, v.metric_fields),
         row,
+        pin_row=False,
     )
 
 
@@ -414,21 +417,27 @@ def _add_compare_block(page, v, dim_specs):
     page.write("A{}".format(header_row), [["From", "To"] + v.metric_labels])
 
     def totals(row):
-        lower = '">="&$A{}'.format(row)
-        upper = '"<"&($B{}+1)'.format(row)
+        # The From/To cells sit in columns A and B of this row: pin the column
+        # so dragging a total across the metrics keeps reading the same dates.
+        from_cell = cell_ref(1, row, pin_row=False)
+        to_cell = cell_ref(2, row, pin_row=False)
+        lower = '">="&{}'.format(from_cell)
+        upper = '"<"&({}+1)'.format(to_cell)
         cell_of = _metric_cell_of(v, 3, row)
         return [
             range_guarded(
                 calc_cell_formula(m.formula, cell_of) if is_calculated(m)
                 else between_formula(m, v.date_range, lower, upper,
                                      dim_specs, v.sentinel),
-                "$A{}".format(row), "$B{}".format(row),
+                from_cell, to_cell,
             )
             for m in v.metric_fields
         ]
 
+    # The two compared rows are fixed, so pin the rows; the column stays
+    # relative so dragging the % change cell right walks on to the next metric.
     diffs = [
-        '=IFERROR(({c}{b}-{c}{a})/{c}{a}, "")'.format(
+        '=IFERROR(({c}${b}-{c}${a})/{c}${a}, "")'.format(
             c=column_to_letter(3 + i), b=b_row, a=a_row)
         for i in range(len(v.metric_fields))
     ]
@@ -483,15 +492,16 @@ def _add_period_matrix(page, v, dim_specs):
 
     periods = [[period_start_formula(v.granularity)]]
     for j in range(1, v.num_periods):
-        periods.append(
-            [period_next_formula(v.granularity, "A{}".format(first_data + j - 1))]
-        )
+        periods.append([period_next_formula(
+            v.granularity, cell_ref(1, first_data + j - 1, pin_row=False))])
     page.write_formulas("A{}".format(first_data), periods)
 
     matrix = []
     for j in range(v.num_periods):
         prow = first_data + j
-        cell = "A{}".format(prow)
+        # The period label lives in column A of this row: pin the column so a
+        # metric cell dragged across the row keeps bucketing by the same date.
+        cell = cell_ref(1, prow, pin_row=False)
         cell_of = _metric_cell_of(v, 2, prow)
         row = [
             calc_cell_formula(m.formula, cell_of) if is_calculated(m)
@@ -561,7 +571,9 @@ def _add_breakout_tables(page, v, dim_specs, window):
             block = []
             for k in range(num_rows):
                 vrow = first_data + k
-                vcell = "A{}".format(vrow)
+                # The value label is in column A of this row (see the period
+                # matrix): pinned by column, relative by row.
+                vcell = cell_ref(1, vrow, pin_row=False)
                 cell_of = _metric_cell_of(v, 2, vrow)
                 block.append([
                     calc_cell_formula(m.formula, cell_of) if is_calculated(m)

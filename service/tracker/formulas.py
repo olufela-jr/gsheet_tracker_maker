@@ -265,11 +265,12 @@ def calc_cell_formula(formula, cell_of):
     """A calculated field's cell: [Field] tokens become sibling cell refs.
 
     The referenced metric cells live in the same block and already respond to
-    the slicers and date controls, so plain cell arithmetic (e.g. =B7/C7)
+    the slicers and date controls, so plain cell arithmetic (e.g. =$B7/$C7)
     gives the same number as re-expanding the SUMIFS — with a formula a human
-    can read. cell_of(name) returns the sibling ref; IFERROR blanks
-    divide-by-zero. Used everywhere except the Comparison tab's trend helper,
-    which has no sibling metric cells to reference.
+    can read. cell_of(name) returns the sibling ref, pinned along the axis
+    that must not move (see config.cell_ref); IFERROR blanks divide-by-zero.
+    Used everywhere except the Comparison tab's trend helper, which has no
+    sibling metric cells to reference.
     """
     expr = _TOKEN_RE.sub(lambda m: cell_of(m.group(1).strip()), formula)
     return '=IFERROR({}, "")'.format(expr)
@@ -278,7 +279,7 @@ def calc_cell_formula(formula, cell_of):
 def _sumifs_between(metric_range, date_range, lower, upper, dim_specs, sentinel):
     """SUMIFS for a raw metric between two date-criteria strings, dropdown-filtered.
 
-    lower / upper are full criteria strings, e.g. '">="&B5' and '"<"&(C5+1)'.
+    lower / upper are full criteria strings, e.g. '">="&$A10' and '"<"&($B10+1)'.
     """
     parts = [metric_range, date_range, lower, date_range, upper]
     for dim_range, cell in dim_specs:
@@ -314,13 +315,17 @@ def grand_total_formula(metric, dim_specs, sentinel):
 
 
 def column_total_formula(col_letter, first_row, last_row):
-    """SUM down one metric column's data rows, e.g. =SUM(B16:B27).
+    """SUM down one metric column's data rows, e.g. =SUM(B$16:B$27).
 
     Blank guarded cells hold "" (text), which SUM ignores, so the range
     needs no guard of its own. Calculated fields never reach here: their
     total is rebuilt by calc_cell_formula from the totals row's own cells.
+
+    The rows are pinned and the column left relative: the block's data rows
+    are fixed, but dragging the Total cell right should walk on to the next
+    metric's column.
     """
-    return "=SUM({c}{a}:{c}{b})".format(c=col_letter, a=first_row, b=last_row)
+    return "=SUM({c}${a}:{c}${b})".format(c=col_letter, a=first_row, b=last_row)
 
 
 def bucket_formula(metric, date_range, cell, granularity, dim_specs, sentinel):

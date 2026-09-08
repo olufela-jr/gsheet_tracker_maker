@@ -21,7 +21,7 @@ its MATCH searches must both carry labels, in metric_fields order.
 from collections import namedtuple
 
 import theme
-from config import column_to_letter, sanitise_name, a1
+from config import cell_ref, column_to_letter, sanitise_name, a1
 
 from .common import (
     Page,
@@ -91,10 +91,11 @@ _Layout = namedtuple(
     ],
 )
 
-# The per-side SUMIFS specs and date cells the formula builders consume.
-# *_rel use relative refs (B5); *_abs pin them ($B$5) for the helper block,
-# whose formulas live in a different column and must not shift.
-_Sides = namedtuple("_Sides", ["a_rel", "b_rel", "a_abs", "b_abs", "fa", "ta", "fb", "tb"])
+# The per-side SUMIFS specs and date cells the formula builders consume. Every
+# ref here names one fixed input cell in a side's panel, read from the metrics
+# table below and the helper block off to the right, so all of them are pinned
+# both ways ($B$5) — no drag anywhere on the tab should repoint them.
+_Sides = namedtuple("_Sides", ["a", "b", "fa", "ta", "fb", "tb"])
 
 
 def _comparison_inputs(client, cfg, fields, headers, serials):
@@ -168,17 +169,14 @@ def _add_banner_and_side_headers(page, v, L):
 
 def _add_side_filters(page, v, L):
     """One dropdown per shown dimension plus Date from / Date to, per side."""
-    specs_a_rel, specs_b_rel = [], []
-    specs_a_abs, specs_b_abs = [], []
+    specs_a, specs_b = [], []
     for i, dim in enumerate(v.dimensions):
         r = L.first_dim_row + i
         page.write("A{}".format(r), [[v.labels[dim], v.sentinel]])
         page.write("D{}".format(r), [[v.labels[dim], v.sentinel]])
         rng = sanitise_name(dim)
-        specs_a_rel.append((rng, "B{}".format(r)))
-        specs_b_rel.append((rng, "E{}".format(r)))
-        specs_a_abs.append((rng, "$B${}".format(r)))
-        specs_b_abs.append((rng, "$E${}".format(r)))
+        specs_a.append((rng, cell_ref(2, r)))
+        specs_b.append((rng, cell_ref(5, r)))
 
     page.write("A{}".format(L.from_row), [["Date from", v.default_from]])
     page.write("D{}".format(L.from_row), [["Date from", v.default_from]])
@@ -194,10 +192,9 @@ def _add_side_filters(page, v, L):
     page.fmt.append(theme.outer_border(page.sheet_id, L.header_row - 1, L.to_row, 3, 5))
 
     return _Sides(
-        a_rel=specs_a_rel, b_rel=specs_b_rel,
-        a_abs=specs_a_abs, b_abs=specs_b_abs,
-        fa="B{}".format(L.from_row), ta="B{}".format(L.to_row),
-        fb="E{}".format(L.from_row), tb="E{}".format(L.to_row),
+        a=specs_a, b=specs_b,
+        fa=cell_ref(2, L.from_row), ta=cell_ref(2, L.to_row),
+        fb=cell_ref(5, L.from_row), tb=cell_ref(5, L.to_row),
     )
 
 
@@ -209,7 +206,10 @@ def _add_metrics_table(page, v, L, sides):
         page.write("A{}".format(L.read_first_row),
                    [[label] for label in v.metric_labels])
         # Metrics render as rows here, so a calculated field references the
-        # sibling metric cells in the same column (one per side).
+        # sibling metric cells in the same column (one per side). Each operand
+        # names a specific metric's row, so pin the row and leave the column
+        # relative: dragging Side A's calc cell right into column C rewrites it
+        # into Side B's.
         row_of = {m.name: L.read_first_row + i
                   for i, m in enumerate(v.metric_fields)}
         rows = []
@@ -218,20 +218,25 @@ def _add_metrics_table(page, v, L, sides):
             if is_calculated(m):
                 a_total = calc_cell_formula(
                     m.formula,
-                    lambda n: "B{}".format(
-                        resolve_token_(row_of, n, v.metric_fields)))
+                    lambda n: cell_ref(
+                        2, resolve_token_(row_of, n, v.metric_fields),
+                        pin_col=False))
                 b_total = calc_cell_formula(
                     m.formula,
-                    lambda n: "C{}".format(
-                        resolve_token_(row_of, n, v.metric_fields)))
+                    lambda n: cell_ref(
+                        3, resolve_token_(row_of, n, v.metric_fields),
+                        pin_col=False))
             else:
                 a_total = between_formula(
                     m, v.date_range, '">="&{}'.format(sides.fa),
-                    '"<"&({}+1)'.format(sides.ta), sides.a_rel, v.sentinel)
+                    '"<"&({}+1)'.format(sides.ta), sides.a, v.sentinel)
                 b_total = between_formula(
                     m, v.date_range, '">="&{}'.format(sides.fb),
-                    '"<"&({}+1)'.format(sides.tb), sides.b_rel, v.sentinel)
-            diff = '=IFERROR((C{r}-B{r})/B{r}, "")'.format(r=rr)
+                    '"<"&({}+1)'.format(sides.tb), sides.b, v.sentinel)
+            # The two side columns are fixed; the row moves with the metric.
+            diff = '=IFERROR(({b}-{a})/{a}, "")'.format(
+                a=cell_ref(2, rr, pin_row=False),
+                b=cell_ref(3, rr, pin_row=False))
             rows.append([a_total, b_total, diff])
         page.write_formulas("B{}".format(L.read_first_row), rows)
 
@@ -298,25 +303,30 @@ def _add_trend_helper(page, v, L, mp, gp, sides):
     arr = "{" + ";".join(
         '"{}"'.format(str(n).replace('"', '""')) for n in v.metric_labels) + "}"
 
+    # Within the helper block every ref points at a fixed column of the same
+    # row (the index, or that row's start/end date), so they are pinned by
+    # column and left relative by row — the block is read down, not across.
     def start_formula(from_cell, r):
-        return ('=IF({fa}="","",IF({g}="day",{fa}+({ix}{r}-1),'
-                'IF({g}="week",{fa}+({ix}{r}-1)*7,EDATE({fa},{ix}{r}-1))))').format(
-                    fa=from_cell, g=gp, ix=idx_col, r=r)
+        ix = cell_ref(idx_col, r, pin_row=False)
+        return ('=IF({fa}="","",IF({g}="day",{fa}+({ix}-1),'
+                'IF({g}="week",{fa}+({ix}-1)*7,EDATE({fa},{ix}-1))))').format(
+                    fa=from_cell, g=gp, ix=ix)
 
-    def end_formula(start_ref, r):
+    def end_formula(start_col, r):
         return ('=IF({s}="","",IF({g}="day",{s}+1,'
                 'IF({g}="week",{s}+7,EDATE({s},1))))').format(
-                    s="{}{}".format(start_ref, r), g=gp)
+                    s=cell_ref(start_col, r, pin_row=False), g=gp)
 
-    def value_formula(start_ref, end_ref, to_cell, specs, r):
-        lower = '">="&{}{}'.format(start_ref, r)
-        upper = '"<"&{}{}'.format(end_ref, r)
+    def value_formula(start_col, end_col, to_cell, specs, r):
+        start = cell_ref(start_col, r, pin_row=False)
+        lower = '">="&{}'.format(start)
+        upper = '"<"&{}'.format(cell_ref(end_col, r, pin_row=False))
         exprs = ",".join(
             between_expr(m, v.date_range, lower, upper, specs, v.sentinel)
             for m in v.metric_fields)
-        return ('=IF(OR({s}{r}="",{s}{r}>{to}),"",'
+        return ('=IF(OR({s}="",{s}>{to}),"",'
                 'CHOOSE(MATCH({mp},{arr},0),{exprs}))').format(
-                    s=start_ref, r=r, to=to_cell, mp=mp, arr=arr, exprs=exprs)
+                    s=start, to=to_cell, mp=mp, arr=arr, exprs=exprs)
 
     helper = []
     for k in range(COMPARISON_PERIODS):
@@ -325,10 +335,10 @@ def _add_trend_helper(page, v, L, mp, gp, sides):
             k + 1,
             start_formula(sides.fa, r),
             end_formula(a_start_col, r),
-            value_formula(a_start_col, a_end_col, sides.ta, sides.a_abs, r),
+            value_formula(a_start_col, a_end_col, sides.ta, sides.a, r),
             start_formula(sides.fb, r),
             end_formula(b_start_col, r),
-            value_formula(b_start_col, b_end_col, sides.tb, sides.b_abs, r),
+            value_formula(b_start_col, b_end_col, sides.tb, sides.b, r),
         ])
     # The index column is a plain value; the rest are formulas. Writing the
     # whole block as USER_ENTERED lets the integers and formulas coexist.

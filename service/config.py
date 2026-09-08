@@ -85,6 +85,23 @@ def column_to_letter(col):
     return letters
 
 
+def cell_ref(col, row, pin_col=True, pin_row=True):
+    """An A1 cell ref with the named axes pinned: cell_ref(2, 4) -> '$B$4'.
+
+    `col` is a 1-based column index or an already-resolved letter. Every cell
+    this service writes carries its row number baked in, so pinning changes
+    nothing on a fresh deploy — it is the generator's only defence against a
+    reader dragging or filling a cell afterwards. Pin the axis a ref must not
+    move along and leave the other relative, so the drag adapts: a slicer
+    dropdown every formula reads is pinned both ways, while a row-label cell
+    read across its row is pinned by column only ($A16).
+    """
+    letter = col if isinstance(col, str) else column_to_letter(col)
+    return "{}{}{}{}".format(
+        "$" if pin_col else "", letter, "$" if pin_row else "", row
+    )
+
+
 def sanitise_name(name):
     """Turn a header into a valid named-range identifier.
 

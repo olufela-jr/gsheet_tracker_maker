@@ -2,7 +2,7 @@
 
 import pytest
 
-from config import column_to_letter, sanitise_name
+from config import cell_ref, column_to_letter, sanitise_name
 
 
 class TestColumnToLetter:
@@ -22,6 +22,29 @@ class TestColumnToLetter:
             column_to_letter(0)
         with pytest.raises(ValueError):
             column_to_letter(-1)
+
+
+class TestCellRef:
+    def test_both_axes_pinned_by_default(self):
+        # A fixed input cell every formula on a tab reads, e.g. a slicer.
+        assert cell_ref(2, 4) == "$B$4"
+
+    def test_column_only_for_a_row_label_read_across_its_row(self):
+        # Drag right holds column A; drag down advances to the next period.
+        assert cell_ref(1, 16, pin_row=False) == "$A16"
+
+    def test_row_only_for_a_column_read_across_a_row(self):
+        # Drag right walks on to the next metric's column.
+        assert cell_ref(2, 27, pin_col=False) == "B$27"
+
+    def test_neither_axis_pinned(self):
+        assert cell_ref(3, 9, pin_col=False, pin_row=False) == "C9"
+
+    def test_accepts_an_already_resolved_letter(self):
+        assert cell_ref("H", 4, pin_row=False) == "$H4"
+
+    def test_multi_letter_column(self):
+        assert cell_ref(27, 3) == "$AA$3"
 
 
 class TestSanitiseName:

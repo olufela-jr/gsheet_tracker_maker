@@ -156,7 +156,7 @@ class TestBuildView:
         # divides the sibling cells (which already respond to the slicers).
         grand = client._find_write(client.formula_writes, "B7")[0]
         assert grand[0].startswith("=SUMIFS(Spend")
-        assert grand[2] == '=IFERROR(B7/C7, "")'
+        assert grand[2] == '=IFERROR($B7/$C7, "")'
 
         # The period column anchors on 1 January of yesterday's year (the
         # Year dropdown scopes the break-outs, not the matrix) and steps
@@ -166,7 +166,7 @@ class TestBuildView:
         assert len(periods) == 12
         assert periods[0] == ["=DATE(YEAR(TODAY()-1),1,1)"]
         assert periods[1] == [
-            '=IF(A16="","",IF(EDATE(A16,1)>TODAY()-1,"",EDATE(A16,1)))'
+            '=IF($A16="","",IF(EDATE($A16,1)>TODAY()-1,"",EDATE($A16,1)))'
         ]
 
         # Main matrix: one column per metric (no change % columns); monthly
@@ -177,8 +177,8 @@ class TestBuildView:
         matrix = client._find_write(client.formula_writes, "B16")
         assert len(matrix) == 12  # one row per window period
         assert len(matrix[0]) == 3  # one column per metric
-        assert matrix[0][0].startswith('=IF(A16="","",SUMIFS(Spend')
-        assert "EOMONTH(A16,0)" in matrix[0][0]
+        assert matrix[0][0].startswith('=IF($A16="","",SUMIFS(Spend')
+        assert "EOMONTH($A16,0)" in matrix[0][0]
 
     def test_matrix_totals_row_sums_the_period_rows(self):
         client = _client(DEFAULT_CONFIG.monthly_tab)
@@ -188,9 +188,9 @@ class TestBuildView:
         total = client._find_write(client.formula_writes, "A28")
         assert total == [[
             "Total",
-            "=SUM(B16:B27)",
-            "=SUM(C16:C27)",
-            '=IFERROR(B28/C28, "")',
+            "=SUM(B$16:B$27)",
+            "=SUM(C$16:C$27)",
+            '=IFERROR($B28/$C28, "")',
         ]]
 
     def test_chart_stops_above_the_totals_row(self):
@@ -239,17 +239,17 @@ class TestBuildView:
         spend_a = rows[0][2]
         assert spend_a.startswith('=IF(OR($A10="",$B10=""),"",SUMIFS(Spend')
         assert '">="&$A10' in spend_a and '"<"&($B10+1)' in spend_a
-        assert "IF(B4=" in spend_a
+        assert "IF($B$4=" in spend_a
         # The calculated CPC column divides its row's sibling cells, inside
         # the same both-dates-picked guard.
         assert rows[0][4] == (
-            '=IF(OR($A10="",$B10=""),"",IFERROR(C10/D10, ""))'
+            '=IF(OR($A10="",$B10=""),"",IFERROR($C10/$D10, ""))'
         )
         # % change per metric underneath, comparing the two rows.
         assert rows[2][2:] == [
-            '=IFERROR((C11-C10)/C10, "")',
-            '=IFERROR((D11-D10)/D10, "")',
-            '=IFERROR((E11-E10)/E10, "")',
+            '=IFERROR((C$11-C$10)/C$10, "")',
+            '=IFERROR((D$11-D$10)/D$10, "")',
+            '=IFERROR((E$11-E$10)/E$10, "")',
         ]
         # The From/To cells are dropdowns of the Mapping date column (the
         # column after the one mapped dimension, so 'mapping'!B).
@@ -281,7 +281,7 @@ class TestBuildView:
         header = client._find_write(client.raw_writes, "A10")[0]
         assert header == ["Period", "Spend", "Clicks", "CPC"]
         matrix = client._find_write(client.formula_writes, "B11")
-        assert "(A11+1)" in matrix[0][0]
+        assert "($A11+1)" in matrix[0][0]
 
     def test_daily_rolling_window_and_date_dropdowns(self):
         client = _client(DEFAULT_CONFIG.daily_tab)
@@ -308,13 +308,13 @@ class TestBuildView:
         periods = client._find_write(client.formula_writes, "A11")
         assert len(periods) == 14
         assert periods[0] == ["=TODAY()-14"]
-        assert periods[1] == ["=A11+1"]
+        assert periods[1] == ["=$A11+1"]
         # The window always fills, so metric cells are unguarded; the
         # calculated CPC references its row's sibling cells.
         matrix = client._find_write(client.formula_writes, "B11")
         assert matrix[0][0].startswith("=SUMIFS(Spend")
-        assert matrix[0][2] == '=IFERROR(B11/C11, "")'
-        assert matrix[1][2] == '=IFERROR(B12/C12, "")'
+        assert matrix[0][2] == '=IFERROR($B11/$C11, "")'
+        assert matrix[1][2] == '=IFERROR($B12/$C12, "")'
 
     def test_weekly_rolling_window_and_date_pickers(self):
         client = _client(DEFAULT_CONFIG.weekly_tab)
@@ -332,7 +332,7 @@ class TestBuildView:
         periods = client._find_write(client.formula_writes, "A16")
         assert len(periods) == 6
         assert periods[0] == ["=TODAY()-1-WEEKDAY(TODAY()-1,3)-35"]
-        assert periods[1] == ["=A16+7"]
+        assert periods[1] == ["=$A16+7"]
         # One column per metric, no delta columns.
         matrix = client._find_write(client.formula_writes, "B16")
         assert len(matrix[0]) == 3
@@ -416,7 +416,7 @@ class TestBuildView:
         # bounded by the tab's date pickers (blank picker = unbounded side).
         breakout = [
             w for w in client.formula_writes
-            if w["values"] and "SUMIFS(Spend, Region, A" in str(w["values"][0][0])
+            if w["values"] and "SUMIFS(Spend, Region, $A" in str(w["values"][0][0])
         ]
         assert breakout
         cell = breakout[0]["values"][0][0]
@@ -448,9 +448,9 @@ class TestBuildView:
         total = client._find_write(client.formula_writes, "A29")
         assert total == [[
             "Total",
-            "=SUM(B27:B28)",
-            "=SUM(C27:C28)",
-            '=IFERROR(B29/C29, "")',
+            "=SUM(B$27:B$28)",
+            "=SUM(C$27:C$28)",
+            '=IFERROR($B29/$C29, "")',
         ]]
 
 
@@ -519,9 +519,9 @@ class TestBreakoutCap:
         total = client._find_write(client.formula_writes, "A28")
         assert total == [[
             "Total",
-            "=SUM(B27:B27)",
-            "=SUM(C27:C27)",
-            '=IFERROR(B28/C28, "")',
+            "=SUM(B$27:B$27)",
+            "=SUM(C$27:C$27)",
+            '=IFERROR($B28/$C28, "")',
         ]]
 
     def test_an_empty_breakout_gets_no_totals_row(self):
@@ -722,9 +722,9 @@ class TestComparison:
         assert rows is not None
         spend_a = rows[0][0]
         # Bounded by the side's from/to cells and filtered by the Region dropdown.
-        assert '">="&B' in spend_a and '"<"&(B' in spend_a
+        assert '">="&$B$5' in spend_a and '"<"&($B$6+1)' in spend_a
         assert "Region, IF(" in spend_a
-        assert rows[0][2].startswith("=IFERROR((C")  # % diff
+        assert rows[0][2].startswith("=IFERROR(($C")  # % diff
         # The calculated CPC row references the sibling metric rows per side
         # (metrics render as rows on this tab).
         assert rows[2][0].startswith("=IFERROR(B")
